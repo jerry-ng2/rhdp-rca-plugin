@@ -31,52 +31,39 @@ RHDP RCA Plugin is a Claude Code marketplace containing specialized skills desig
 ### Prerequisites
 
 - [Claude Code](https://claude.ai/claude-code) installed
-- SSH access to remote servers (for log fetching)
-- Splunk credentials (for correlation analysis)
+- SSH access to remote servers (for optional log auto-fetch)
+- Splunk credentials (for log correlation)
 
-### Installation
 
-1. **Install via Claude Code UI**:
-   - Navigate to Plugins (`/plugin` in terminal)
-   - Add marketplace `redhat-et/rhdp-rca-plugin`
-   - Browse and install plugins
-   - Restart Claude Code
+### 1) Install the plugin
 
-2. **Configure environment variables** in `.claude/settings.local.json`:
+- Open Claude Code and run `/plugin`
+- Add marketplace: `redhat-et/rhdp-rca-plugin`
+- Install the plugin and restart Claude Code
 
-```json
-{
-  "env": {
-    "REMOTE_HOST": "<remote-host>",
-    "REMOTE_DIR": "<remote-dir>",
-    "DEFAULT_LOCAL_DIR": "Path.home() / 'aiops_extracted_logs'",
-    "JOB_LOGS_DIR": "/path/to/your/extracted_logs",
-    "GITHUB_TOKEN": "ghp_xxxxxxxxxxxx",
-    "SPLUNK_HOST": "<your-remote-splunk>",
-    "SPLUNK_USERNAME": "your-username",
-    "SPLUNK_PASSWORD": "your-password",
-    "SPLUNK_INDEX": "<your-splunk-index>",
-    "SPLUNK_OCP_APP_INDEX": "<splunk-ocp-app-index>",
-    "SPLUNK_OCP_INFRA_INDEX": "<splunk-ocp-infra-index>",
-    "SPLUNK_VERIFY_SSL": "false"
-  }
-}
+### 2) Run root cause analysis
+
+Start with a normal RCA request:
+
+```text
+/aiops-plugin:root-cause-analysis job 123456
 ```
 
-### SSH Credentials
-Please setup your SSH connection to the server before invoking log fetching skills.
+The root-cause-analysis workflow runs preflight checks and setup guidance first, then runs steps 1-4 automatically (log parse, Splunk correlation, GitHub context fetch), followed by Step 5 analysis.
 
-The current log fetcher skills assumed the current settings: REMOTE_HOST = "" REMOTE_DIR = "" DEFAULT_LOCAL_DIR = Path.home() / "aiops_extracted_logs"
+### 3) Manual fallback (only if needed)
 
-We encourage you to setup your profile under `~/.ssh/config`:
+If preflight setup does not complete in your environment:
 
-```
-Host <remote-host>
-    HostName <host-name>
-    User <your-username>-redhat.com
-    Port 22
-    IdentityFile /Users/<User>/.ssh/<SSH_Public_Key>
-```
+1. Copy and update `.claude/settings.example.json`.
+2. Apply it to your local `.claude/settings.local.json` (project-level), including env vars and hooks.
+
+**Note:** These hooks are required for MLflow tracing. The `Stop` hook 
+flushes traces and the `SessionStart` hook captures the session ID.
+
+For tracing:
+- MLflow tracing is optional.
+- If MLflow is still not configured after step 2, use [MLflow Tracing Setup (Manual Fallback)](./docs/mlflow-tracing.md).
 
 ---
 
@@ -148,58 +135,6 @@ Step 5   [Claude]  Analyze and summarize root cause
 - Troubleshoot Kubernetes/OpenShift problems
 
 **[View detailed documentation →](./skills/root-cause-analysis/README.md)**
-
----
-
-```json
-{
-  "env": {
-    "REMOTE_HOST": "<remote-host>",
-    "REMOTE_DIR": "<remote-dir>",
-    "DEFAULT_LOCAL_DIR": "<path-to-local-extracted-logs>",
-    "JOB_LOGS_DIR": "/path/to/your/extracted_logs",
-    "SPLUNK_HOST": "<your-remote-splunk>",
-    "SPLUNK_USERNAME": "your-username",
-    "SPLUNK_PASSWORD": "your-password",
-    "SPLUNK_INDEX": "<your-splunk-index>",
-    "SPLUNK_OCP_APP_INDEX": "<splunk-ocp-app-index>",
-    "SPLUNK_OCP_INFRA_INDEX": "<splunk-ocp-infra-index>",
-    "SPLUNK_VERIFY_SSL": "false",
-    "JUMPBOX_URI": "<username>.com@<jumpbox> -p <port>",
-    "MLFLOW_CLAUDE_TRACING_ENABLED": "true",
-    "MLFLOW_PORT":"<set localhost port>",
-    "MLFLOW_EXPERIMENT_NAME": "<experiment name or default>"
-  }
-}
-
-```
-```json
-{
-  "hooks": {
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python -c \"from mlflow.claude_code.hooks import stop_hook_handler; stop_hook_handler()\""
-          }
-        ]
-      }
-    ],
-    "SessionStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "INPUT=$(cat); SESSION_ID=$(echo \"$INPUT\" | jq -r '.session_id'); echo \"export CLAUDE_SESSION_ID='$SESSION_ID'\" >> \"$CLAUDE_ENV_FILE\""
-          }
-        ]
-      }
-    ]
-  }
-}
-```
-**Note:** These hooks are required for MLflow tracing. The `Stop` hook flushes traces and the `SessionStart` hook captures the session ID.
 
 ### context-fetcher
 
@@ -331,107 +266,6 @@ Instructions for Claude...
 See [template-skill](./template-skill/) for a minimal example and [agent_skills_spec.md](./agent_skills_spec.md) for the full specification.
 
 ---
-
-## MLFlow Tracing Setup Guide for Claude Code
-
-### Step 1: Install Dependencies
-
-1. Create and activate a virtual environment:
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-```
-
-2. Install the package and MLFlow:
-
-```bash
-pip install -e .
-pip install mlflow
-```
-
-3. Enable MLFlow autologging for Claude:
-
-```bash
-mlflow autolog claude
-```
-
-### Step 2: Configure Claude Settings
-
-Add the following environment variables to your Claude settings file at `~/.claude/settings.json`:
-
-```json
-{
-  "env": {
-    "JUMPBOX_URI": "<your-username>@<your-jumpbox> -p <port>",
-    "MLFLOW_CLAUDE_TRACING_ENABLED": "true",
-    "MLFLOW_PORT":"<set localhost port>",
-    "MLFLOW_EXPERIMENT_NAME": "<experiment-name>"
-  }
-}
-```
-
-**Note**: Replace `<your-username>@<your-jumpbox> -p <port>` with your actual jumpbox connection details.
-Replace `<experiment-name>` to a experiment name to the desired experiment name. This will automatically create the experiment for you if it does not exist.
-
-### Step 3: Add MLflow hooks to `.claude/settings.json`
-
-Add both `Stop` and `SessionStart` hooks to your settings:
-
-```json
-{
-  "hooks": {
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python -c \"from mlflow.claude_code.hooks import stop_hook_handler; stop_hook_handler()\""
-          }
-        ]
-      }
-    ],
-    "SessionStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "INPUT=$(cat); SESSION_ID=$(echo \"$INPUT\" | jq -r '.session_id'); echo \"export CLAUDE_SESSION_ID='$SESSION_ID'\" >> \"$CLAUDE_ENV_FILE\""
-          }
-        ]
-      }
-    ]
-  }
-}
-```
-
-- **Stop hook**: Flushes MLflow traces when Claude stops
-- **SessionStart hook**: Captures the session ID for trace correlation
-
-### Step 4: cd into AIOPS-SKILLS/ dir (where claude will be running)
-
-### Step 5: Enable Claude Autologging
-
-Before starting Claude, run:
-
-```bash
-mlflow autolog claude
-```
-
-### Step 6: Start Claude
-
-```bash
-claude
-```
-
-### Step 7: Run a Prompt
-
-Enter any prompt in Claude to generate a trace.
-
-### Step 8: View Traces
-Open your browser and navigate to:                                                                                                            
-http://localhost:5000                                                                                                                                             
-Your MLFlow dashboard will display your trace along with any previous traces.
 
 ## Contributing
 
