@@ -25,11 +25,11 @@ Use `.claude/settings.example.json` and copy the MLflow-related keys/hook blocks
 Required pieces:
 - `MLFLOW_CLAUDE_TRACING_ENABLED`, `MLFLOW_PORT`, `MLFLOW_EXPERIMENT_NAME`
 - `SessionStart` and `Stop` hooks
-
-## 4) Enable autologging and verify
+Note: Set MLFLOW_CLAUDE_TRACING_ENABLED to false to disable tracking
+## 4) Start claude
 
 ```bash
-mlflow autolog claude -u "http://127.0.0.1:$MLFLOW_PORT" -n "$MLFLOW_EXPERIMENT_NAME"
+claude 
 ```
 
 Then run Claude and execute an RCA prompt. If configured correctly, traces appear in your MLflow UI.

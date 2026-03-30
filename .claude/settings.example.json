@@ -35,7 +35,7 @@
           },
           {
             "type": "command",
-            "command": "if [ \"$MLFLOW_CLAUDE_TRACING_ENABLED\" = \"true\" ]; then mlflow autolog claude -u http://127.0.0.1:$MLFLOW_PORT -n $MLFLOW_EXPERIMENT_NAME; fi"
+            "command": "if [ \"$MLFLOW_CLAUDE_TRACING_ENABLED\" = \"true\" ]; then python3 -c \"import mlflow; client=mlflow.tracking.MlflowClient(tracking_uri='http://127.0.0.1:$MLFLOW_PORT'); exp=client.get_experiment_by_name('$MLFLOW_EXPERIMENT_NAME'); client.restore_experiment(exp.experiment_id) if exp and exp.lifecycle_stage == 'deleted' else None\" && mlflow autolog claude -u http://127.0.0.1:$MLFLOW_PORT -n $MLFLOW_EXPERIMENT_NAME; fi"
           }
         ]
       }
