@@ -5,6 +5,7 @@ allowed-tools:
   - Read
   - Write
   - Bash
+  - AskUserQuestion
 ---
 
 # RCA Annotator
@@ -45,20 +46,29 @@ If missing, run `root-cause-analysis` skill first.
 
 ---
 
-## Step 0: Download Analysis Files
+## Step 0: Locate Analysis Files
+
+First, determine where the analysis files are:
+
+1. Check if `step5_analysis_summary.json` exists in the current directory
+2. If not, check `.analysis/<job_id>/`
+3. If neither exists and `JUMPBOX_URI` is set, download files:
 
 ```bash
 cd skills/rca-annotator
 python scripts/cli.py download --job-id <job_id>
 ```
 
-Downloads from jumpbox `/usr/local/mlflow/<job_id>/` to local `.analysis/<job_id>/`. If `JUMPBOX_URI` unset, validates local files only. Errors on missing remote directory, missing required files, or connection failure.
+**For eval/headless mode**: Files are in the current directory (workspace root)
+**For interactive mode**: Files are in `.analysis/<job_id>/` (relative to `skills/rca-annotator/`)
+
+Once located, record the base path for reading step files in subsequent steps.
 
 ---
 
 ## Step 1: Read Agent Diagnosis
 
-Read `step5_summary.json` and present the agent's diagnosis clearly to the user:
+Read `step5_analysis_summary.json` from the base path determined in Step 0 and present the agent's diagnosis clearly to the user:
 
 - Root cause category and summary
 - Confidence level
@@ -73,29 +83,49 @@ This is the starting point for annotation. The user is reviewing the agent's wor
 
 ## Step 2: Interactive Annotation
 
-Walk through each question below with the user. Present the relevant section from `step5_summary.json` before asking each question. Wait for the user's response before continuing.
+Walk through each question below with the user. Present the relevant section from `step5_summary.json` before asking each question.
+
+**IMPORTANT**: Use the `AskUserQuestion` tool for each question to enable headless execution in evaluation harnesses. Present the question with appropriate options where applicable. For open-ended questions, use a single free-text option.
 
 ### 1. Root Cause Category
 
-Present the agent's category and summary. Ask:
+Present the agent's category and summary. Use AskUserQuestion to ask:
 
-> **Is the root cause category correct?** *(e.g. `configuration`, `infrastructure`, `credential` — or should it be something else?)*
+```
+Question: "Is the root cause category correct?"
+Options: 
+- "Yes, <agent_category> is correct"
+- "No, should be: <other_category>" (for each valid category different from agent's)
+- "Other (specify)"
+```
 
 Valid categories: `configuration` | `infrastructure` | `application_bug` | `dependency` | `network` | `resource` | `cloud_api` | `credential` | `secrets` | `unknown`
 
 ### 2. Summary Accuracy
 
-Present the agent's summary sentence. Ask:
+Present the agent's summary sentence. Use AskUserQuestion to ask:
 
-> **Is the summary accurate and specific?** *(Does it clearly describe what failed and why?)*
+```
+Question: "Is the summary accurate and specific?"
+Options:
+- "Yes, accurate as-is"
+- "Mostly accurate, minor refinement needed"
+- "Needs correction (specify)"
+```
 
 ### 3. Evidence
 
-Present the evidence items the agent cited. Ask:
+Present the evidence items the agent cited. Use AskUserQuestion to ask:
 
-> **Is any evidence missing or wrong?** *(Any key log lines, config values, or Splunk events that were overlooked or incorrectly cited?)*
+```
+Question: "Is any evidence missing or wrong?"
+Options:
+- "All evidence complete and accurate"
+- "Some evidence missing (specify)"
+- "Some evidence incorrect (specify)"
+```
 
-If the user wants to cross-check, read step1/step3/step4 and compare against what the agent cited. This is reference material for validation — not a re-analysis.
+If the user indicates issues, read step1/step3/step4 to help identify missing or incorrect evidence. This is reference material for validation — not a re-analysis.
 
 **Evidence traceability format** (for any new or corrected evidence items the user provides):
 
@@ -130,15 +160,27 @@ Present the agent's difficulty score (or estimate one from the evidence). Presen
 
 Mapping: 0–3 = easy, 4–6 = medium, 7–10 = hard.
 
-Ask:
+Use AskUserQuestion to ask:
 
-> **Is the difficulty rating appropriate?** *(Score of X / 10 — too easy, too hard, or about right? Use the rubric above if helpful.)*
+```
+Question: "Is the difficulty rating appropriate?"
+Options:
+- "Yes, score of <X>/10 is correct"
+- "Too easy, should be <Y>/10"
+- "Too hard, should be <Z>/10"
+```
 
 ### 5. Alternative Diagnoses
 
-Present any alternative diagnoses the agent identified. Ask:
+Present any alternative diagnoses the agent identified. Use AskUserQuestion to ask:
 
-> **Any alternative diagnoses to add or correct?** *(Other plausible-but-incorrect hypotheses worth capturing?)*
+```
+Question: "Any alternative diagnoses to add or correct?"
+Options:
+- "No, alternatives are complete"
+- "Add alternative diagnosis (specify)"
+- "Correct existing alternative (specify)"
+```
 
 Alternative diagnosis format:
 
@@ -167,7 +209,9 @@ After all questions are answered, verify before writing:
 - Difficulty score calculated with justification
 - Alternative diagnoses have plausibility levels
 
-Write `annotation.json` to `.analysis/<job_id>/`.
+Write `annotation.json` to the base path from Step 0:
+- **Eval/headless mode**: Write to `outputs/annotation.json` (create outputs directory first)
+- **Interactive mode**: Write to `.analysis/<job_id>/annotation.json`
 
 ---
 
