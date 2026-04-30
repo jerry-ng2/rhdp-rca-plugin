@@ -552,8 +552,6 @@ def check_mlflow_server() -> dict:
 
 def check_mlflow_hooks(repo_root: Path) -> dict:
     """Check if MLflow Stop hook is configured in settings.json."""
-    import subprocess
-
     search_roots = [repo_root]
     cwd = Path.cwd()
     if cwd != repo_root:
