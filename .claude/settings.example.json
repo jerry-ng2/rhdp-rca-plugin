@@ -30,10 +30,6 @@
           {
             "type": "command",
             "command": "if [ \"$MLFLOW_CLAUDE_TRACING_ENABLED\" = \"true\" ]; then if ! pip show mlflow >/dev/null 2>&1; then pip install mlflow; fi; fi"
-          },
-          {
-            "type": "command",
-            "command": "if [ \"$MLFLOW_CLAUDE_TRACING_ENABLED\" = \"true\" ]; then mlflow autolog claude; fi"
           }
         ]
       }

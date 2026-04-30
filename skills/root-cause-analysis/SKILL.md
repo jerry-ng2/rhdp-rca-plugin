@@ -74,10 +74,6 @@ If any checks have `"status": "missing"` and `"configurable": true`, offer to he
           {
             "type": "command",
             "command": "if [ \"$MLFLOW_CLAUDE_TRACING_ENABLED\" = \"true\" ]; then if ! pip show mlflow >/dev/null 2>&1; then pip install mlflow; fi; fi"
-          },
-          {
-            "type": "command",
-            "command": "if [ \"$MLFLOW_CLAUDE_TRACING_ENABLED\" = \"true\" ]; then  mlflow autolog claude -u $MLFLOW_TRACKING_URI -n $MLFLOW_EXPERIMENT_NAME; fi"
           }
         ]
       }
@@ -88,10 +84,6 @@ If any checks have `"status": "missing"` and `"configurable": true`, offer to he
           {
             "type": "command",
             "command": "python -c \"from mlflow.claude_code.hooks import stop_hook_handler; stop_hook_handler()\""
-          },
-          {
-            "type": "command",
-            "command": "if [ \"$MLFLOW_CLAUDE_TRACING_ENABLED\" = \"true\" ]; then mlflow autolog claude --disable; fi"
           }
         ]
       }

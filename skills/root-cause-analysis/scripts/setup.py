@@ -308,7 +308,6 @@ def _get_tracking_uri() -> str | None:
 
 def check_mlflow() -> dict:
     """Check MLFlow tracing configuration."""
-    port = os.environ.get("MLFLOW_PORT", "")
     enabled = os.environ.get("MLFLOW_CLAUDE_TRACING_ENABLED", "")
     experiment = os.environ.get("MLFLOW_EXPERIMENT_NAME", "")
     tag_user = os.environ.get("MLFLOW_TAG_USER", "")
@@ -316,14 +315,6 @@ def check_mlflow() -> dict:
     env_vars = []
     issues = []
 
-    if is_placeholder(port):
-        issues.append("MLFLOW_PORT not configured")
-        env_vars.append(
-            {
-                "name": "MLFLOW_PORT",
-                "prompt": "Localhost port for MLflow server (e.g. 5000)",
-            }
-        )
     if enabled.lower() != "true":
         issues.append("MLFLOW_CLAUDE_TRACING_ENABLED not set to 'true'")
         env_vars.append(
@@ -360,19 +351,26 @@ def check_mlflow() -> dict:
     return {
         "name": "MLFlow",
         "status": "ok",
-        "message": f"port={port}, experiment={experiment}",
+        "message": f"experiment={experiment}",
     }
 
 
 def _is_server_reachable(tracking_uri: str) -> bool:
     """Check if MLFlow server is reachable by verifying the response is actually MLFlow."""
     try:
+        import base64
         import urllib.error
         import urllib.request
 
         req = urllib.request.Request(
             f"{tracking_uri}/api/2.0/mlflow/experiments/search", method="GET"
         )
+        username = os.environ.get("MLFLOW_TRACKING_USERNAME", "")
+        password = os.environ.get("MLFLOW_TRACKING_PASSWORD", "")
+        if username and password:
+            credentials = base64.b64encode(f"{username}:{password}".encode()).decode()
+            req.add_header("Authorization", f"Basic {credentials}")
+
         resp = urllib.request.urlopen(req, timeout=5)
         body = resp.read().decode("utf-8", errors="replace")
         return "mlflow" in body.lower() or "experiments" in body.lower()
@@ -533,6 +531,14 @@ def check_mlflow_server() -> dict:
 
 def check_mlflow_hooks(repo_root: Path) -> dict:
     """Check if MLflow Stop and SessionStart hooks are configured in settings.json."""
+    tracking_uri = os.environ.get("MLFLOW_TRACKING_URI", "")
+    if tracking_uri and not is_placeholder(tracking_uri):
+        return {
+            "name": "MLflow hooks",
+            "status": "ok",
+            "message": "mlflow autolog configured via MLFLOW_TRACKING_URI",
+        }
+
     for settings_name in ["settings.json", "settings.local.json"]:
         settings_path = repo_root / ".claude" / settings_name
         if settings_path.exists():
