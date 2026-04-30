@@ -35,7 +35,7 @@ Review the JSON output. Some settings are required, others are optional:
 - **JUMPBOX_URI** -- SSH jumpbox connection for uploading analysis results and feedback
 
 **Recommended** (analysis works without these but functionality is reduced):
-- **MLFlow** -- Tracing configuration for recording analysis runs (MLFLOW_PORT, MLFLOW_EXPERIMENT_NAME, MLFLOW_TAG_USER)
+- **MLFlow** -- Tracing configuration for recording analysis runs (MLFLOW_TRACKING_URI, MLFLOW_EXPERIMENT_NAME, MLFLOW_TAG_USER)
 
 **Optional** (skill runs with reduced functionality when missing):
 - **SSH / REMOTE_HOST** not configured: `--fetch` flag won't work (user must provide logs in JOB_LOGS_DIR manually)
@@ -61,7 +61,7 @@ If any checks have `"status": "missing"` and `"configurable": true`, offer to he
      - Then set `REMOTE_HOST` to the alias name
 4. After collecting all values, read the project's `.claude/settings.json` file
 5. Merge the new values into the `"env"` block (create it if it doesn't exist)
-6. If MLflow env vars were configured (MLFLOW_PORT, MLFLOW_EXPERIMENT_NAME), also add the required MLflow hooks to the `"hooks"` block (create it if it doesn't exist):
+6. If MLflow env vars were configured (MLFLOW_TRACKING_URI, MLFLOW_EXPERIMENT_NAME), also add the required MLflow hooks to the `"hooks"` block (create it if it doesn't exist):
    ```json
    "hooks": {
      "SessionStart": [
@@ -73,20 +73,29 @@ If any checks have `"status": "missing"` and `"configurable": true`, offer to he
           },
           {
             "type": "command",
-            "command": "if ! lsof -iTCP:$MLFLOW_PORT -sTCP:LISTEN >/dev/null 2>&1; then ssh -f -N -o ExitOnForwardFailure=yes -L $MLFLOW_PORT:localhost:5000 $JUMPBOX_URI; fi"
-          },
-          {
-            "type": "command",
             "command": "if [ \"$MLFLOW_CLAUDE_TRACING_ENABLED\" = \"true\" ]; then if ! pip show mlflow >/dev/null 2>&1; then pip install mlflow; fi; fi"
           },
           {
             "type": "command",
-            "command": "if [ \"$MLFLOW_CLAUDE_TRACING_ENABLED\" = \"true\" ]; then python3 -c \"import mlflow; client=mlflow.tracking.MlflowClient(tracking_uri='http://127.0.0.1:$MLFLOW_PORT'); exp=client.get_experiment_by_name('$MLFLOW_EXPERIMENT_NAME'); client.restore_experiment(exp.experiment_id) if exp and exp.lifecycle_stage == 'deleted' else None\" && mlflow autolog claude -u http://127.0.0.1:$MLFLOW_PORT -n $MLFLOW_EXPERIMENT_NAME; fi"
+            "command": "if [ \"$MLFLOW_CLAUDE_TRACING_ENABLED\" = \"true\" ]; then  mlflow autolog claude -u $MLFLOW_TRACKING_URI -n $MLFLOW_EXPERIMENT_NAME; fi"
           }
         ]
       }
     ],
-    "Stop": [{ "hooks": [{ "type": "command", "command": "python -c \"from mlflow.claude_code.hooks import stop_hook_handler; stop_hook_handler()\"" }] }],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python -c \"from mlflow.claude_code.hooks import stop_hook_handler; stop_hook_handler()\""
+          },
+          {
+            "type": "command",
+            "command": "if [ \"$MLFLOW_CLAUDE_TRACING_ENABLED\" = \"true\" ]; then mlflow autolog claude --disable; fi"
+          }
+        ]
+      }
+    ]
    }
    ```
 7. Write the updated settings file

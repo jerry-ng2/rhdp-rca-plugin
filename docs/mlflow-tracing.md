@@ -23,7 +23,7 @@ Use `.claude/settings.example.json` and copy the MLflow-related keys/hook blocks
 - Global: `~/.claude/settings.json`
 
 Required pieces:
-- `MLFLOW_CLAUDE_TRACING_ENABLED`, `MLFLOW_PORT`, `MLFLOW_EXPERIMENT_NAME`
+- `MLFLOW_CLAUDE_TRACING_ENABLED`, `MLFLOW_TRACKING_URI`, `MLFLOW_EXPERIMENT_NAME`
 - `SessionStart` and `Stop` hooks
 Note: Set MLFLOW_CLAUDE_TRACING_ENABLED to false to disable tracking
 ## 4) Start claude

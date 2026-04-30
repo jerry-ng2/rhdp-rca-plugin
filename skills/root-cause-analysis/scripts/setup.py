@@ -299,13 +299,10 @@ def check_github_mcp(repo_root: Path) -> dict:
 
 
 def _get_tracking_uri() -> str | None:
-    """Get MLflow tracking URI from env, deriving from MLFLOW_PORT if needed."""
+    """Get MLflow tracking URI from env. MLFLOW_TRACKING_URI is required."""
     uri = os.environ.get("MLFLOW_TRACKING_URI", "")
     if uri and not is_placeholder(uri):
         return uri
-    port = os.environ.get("MLFLOW_PORT", "")
-    if port and not is_placeholder(port):
-        return f"http://127.0.0.1:{port}"
     return None
 
 
@@ -395,9 +392,33 @@ def _parse_uri_port(tracking_uri: str) -> str | None:
         from urllib.parse import urlparse
 
         parsed = urlparse(tracking_uri)
-        return str(parsed.port) if parsed.port else None
+        if parsed.port:
+            return str(parsed.port)
+        # Return default ports for common schemes
+        if parsed.scheme == "https":
+            return "443"
+        elif parsed.scheme == "http":
+            return "80"
+        return None
     except Exception:
         return None
+
+
+def _parse_uri_host(tracking_uri: str) -> str | None:
+    """Extract hostname from a tracking URI."""
+    try:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(tracking_uri)
+        return parsed.hostname
+    except Exception:
+        return None
+
+
+def _is_local_uri(tracking_uri: str) -> bool:
+    """Check if tracking URI points to localhost."""
+    host = _parse_uri_host(tracking_uri)
+    return host in ("localhost", "127.0.0.1", "::1") if host else False
 
 
 def _tunnel_already_running(port: str) -> bool:
@@ -415,16 +436,38 @@ def _tunnel_already_running(port: str) -> bool:
 
 
 def _start_ssh_tunnel(tracking_uri: str, jumpbox_uri: str) -> dict:
-    """Attempt to start an SSH tunnel to the MLFlow server."""
-    port = _parse_uri_port(tracking_uri)
-    if not port:
-        return {"started": False, "message": f"Could not parse port from {tracking_uri}"}
+    """Attempt to start an SSH tunnel to the MLFlow server.
 
-    if _tunnel_already_running(port):
-        return {"started": False, "message": f"Tunnel already running on port {port}"}
+    For remote MLflow servers, creates tunnel: local_port -> remote_host:remote_port
+    For local URIs, uses the configured MLFLOW_PORT if available.
+    """
+    remote_host = _parse_uri_host(tracking_uri)
+    remote_port = _parse_uri_port(tracking_uri)
+
+    if not remote_host or not remote_port:
+        return {"started": False, "message": f"Could not parse host/port from {tracking_uri}"}
+
+    # Determine local port: use MLFLOW_PORT if set, otherwise use remote port
+    local_port = os.environ.get("MLFLOW_PORT", "")
+    if is_placeholder(local_port):
+        local_port = remote_port
+
+    if _tunnel_already_running(local_port):
+        return {"started": False, "message": f"Tunnel already running on port {local_port}"}
 
     try:
-        cmd = ["ssh", "-f", "-N", "-L", f"{port}:127.0.0.1:{port}"] + jumpbox_uri.split()
+        # Format: ssh -L local_port:remote_host:remote_port jumpbox
+        forward_spec = f"{local_port}:{remote_host}:{remote_port}"
+        cmd = [
+            "ssh",
+            "-f",
+            "-N",
+            "-o",
+            "ExitOnForwardFailure=yes",
+            "-L",
+            forward_spec,
+        ] + jumpbox_uri.split()
+
         result = subprocess.run(
             cmd,
             capture_output=True,
@@ -433,7 +476,11 @@ def _start_ssh_tunnel(tracking_uri: str, jumpbox_uri: str) -> dict:
         )
         if result.returncode != 0:
             return {"started": False, "message": f"SSH tunnel failed: {result.stderr.strip()}"}
-        return {"started": True, "message": f"Tunnel started on port {port} via {jumpbox_uri}"}
+
+        return {
+            "started": True,
+            "message": f"Tunnel started: localhost:{local_port} -> {remote_host}:{remote_port} via {jumpbox_uri}",
+        }
     except subprocess.TimeoutExpired:
         return {"started": False, "message": "SSH tunnel timed out"}
     except Exception as e:
@@ -462,43 +509,20 @@ def check_mlflow_server() -> dict:
     if not tracking_uri:
         return {
             "name": "MLFlow server",
-            "status": "missing",
-            "message": "MLFLOW_PORT not configured",
+            "status": "error",
+            "message": "MLFLOW_TRACKING_URI not configured",
         }
 
-    # First check: is it already reachable?
+    # Check if server is reachable
     reachable = _is_server_reachable(tracking_uri)
 
     if not reachable:
-        # Not reachable -- try to start SSH tunnel if JUMPBOX_URI is configured
-        jumpbox = os.environ.get("JUMPBOX_URI", "")
-        if is_placeholder(jumpbox):
-            return {
-                "name": "MLFlow server",
-                "status": "error",
-                "message": f"Cannot reach {tracking_uri}. Set JUMPBOX_URI for SSH tunnel",
-            }
-
-        # Kill any stale tunnel before starting a fresh one
-        port = _parse_uri_port(tracking_uri)
-        if port and _tunnel_already_running(port):
-            _kill_stale_tunnel(port)
-
-        # Attempt tunnel startup
-        tunnel_result = _start_ssh_tunnel(tracking_uri, jumpbox)
-
-        if tunnel_result["started"]:
-            import time
-
-            time.sleep(2)
-            reachable = _is_server_reachable(tracking_uri)
-
-        if not reachable:
-            return {
-                "name": "MLFlow server",
-                "status": "error",
-                "message": f"Cannot reach {tracking_uri}. Tunnel: {tunnel_result['message']}",
-            }
+        # Not reachable - cannot proceed
+        return {
+            "name": "MLFlow server",
+            "status": "error",
+            "message": f"Cannot reach {tracking_uri}",
+        }
 
     return {
         "name": "MLFlow server",

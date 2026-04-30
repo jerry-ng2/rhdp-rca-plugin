@@ -176,7 +176,7 @@ MLflow tracing is supported for debugging and performance analysis but is **not 
 
 To enable tracing:
 1. Install MLflow: `pip install "mlflow[genai]>=3.4"` (or `pip install -e ".[mlflow]"` from the repo root)
-2. Configure `MLFLOW_PORT`, `MLFLOW_EXPERIMENT_NAME`, and optionally `JUMPBOX_URI` in `.claude/settings.json`
+2. Configure `MLFLOW_TRACKING_URI` and `MLFLOW_EXPERIMENT_NAME` in `.claude/settings.json`
 3. Add the required MLflow hooks to `.claude/settings.json`:
    ```json
    "hooks": {
