@@ -6,28 +6,25 @@ set -euo pipefail
 #############################################
 #
 # This script:
-# 1. Fetches recent failed job logs
-# 2. Filters out already-analyzed jobs
-# 3. Invokes Claude in headless mode to run parallel RCA
-# 4. Tracks analyzed jobs to prevent re-analysis
+# 1. Queries source PostgreSQL table for unanalyzed job IDs (ai_proccessed = FALSE)
+# 2. Invokes Claude in headless mode to run parallel RCA on those jobs
+#
+# Requires SOURCE_DB_* env vars (HOST, PORT, NAME, USER, PASSWORD, TABLE)
+# set in .claude/settings.json under "env".
 #
 # Usage:
-#   ./batch_rca_headless.sh [--limit N] [--period 5m|30m|1h|24h]
+#   ./batch_rca_headless.sh [--since 'YYYY-MM-DD HH:MM:SS'] [--limit N]
 #
-# Schedule via cron: (avoid :00, :30 load spikes)
-#   # Every 5 mins (fast testing):  3,8,13,18,23,28,33,38,43,48,53,58 * * * *
-#   # Every 30 mins (prod):         7,37 * * * *
-#   7,37 * * * * /path/to/batch_rca_headless.sh --limit 15 --period 30m >> /tmp/batch_rca.log 2>&1
+# Schedule via cron (every 30 min — each run analyzes the previous 30-min window):
+#   7,37 * * * * /path/to/batch_rca_headless.sh >> /tmp/batch_rca.log 2>&1
 #
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-STATE_FILE="$SCRIPT_DIR/analyzed_jobs.txt"
-TIMESTAMP_FILE="$SCRIPT_DIR/last_fetch_timestamp.txt"
 REPORT_DIR="$SCRIPT_DIR/reports"
 TIMESTAMP=$(date -u +%Y%m%d_%H%M%S)
 
 # Load environment variables from Claude settings.json
-SETTINGS_FILE="$SCRIPT_DIR/.claude/settings.json"
+SETTINGS_FILE="$SCRIPT_DIR/../../.claude/settings.json"
 if [ ! -f "$SETTINGS_FILE" ]; then
   echo "[ERROR] Claude settings.json not found at: $SETTINGS_FILE"
   echo "[ERROR] Please ensure .claude/settings.json exists with env variables configured"
@@ -48,23 +45,20 @@ except Exception as e:
 ")"
 
 echo "[INFO] Environment variables loaded from settings.json"
-echo "  REMOTE_HOST: $REMOTE_HOST"
-echo "  REMOTE_DIR: $REMOTE_DIR"
-echo "  JOB_LOGS_DIR: $JOB_LOGS_DIR"
 
-# Default settings
-LIMIT=10
-PERIOD="30m"
+# Default: look back 30 minutes (matches the cron interval)
+SINCE=""
+LIMIT=""
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
   case $1 in
-    --limit)
-      LIMIT="$2"
+    --since)
+      SINCE="$2"
       shift 2
       ;;
-    --period)
-      PERIOD="$2"
+    --limit)
+      LIMIT="$2"
       shift 2
       ;;
     *)
@@ -74,171 +68,49 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-echo "[INFO] Batch RCA Analysis - $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
-echo "[INFO] Limit: $LIMIT | Period: $PERIOD"
-
-#############################################
-# Step 1: Fetch Recent Logs
-#############################################
-echo "[STEP 1] Fetching recent failed job logs..."
-
-# Calculate time window using state-based tracking to avoid overlaps
-if [ -f "$TIMESTAMP_FILE" ]; then
-  # Use last fetch timestamp as start time
-  START_TIME=$(cat "$TIMESTAMP_FILE")
-  echo "[INFO] Using last fetch time: $START_TIME"
-else
-  # First run - use period-based window
-  echo "[INFO] First run - using period-based window"
-  # Cross-platform date calculation (macOS vs Linux)
+# If --since not provided, default to 30 minutes ago
+if [ -z "$SINCE" ]; then
   if date -v-1d > /dev/null 2>&1; then
-    # macOS (BSD date)
-    case $PERIOD in
-      5m)
-        START_TIME=$(date -u -v-5M "+%Y-%m-%d %H:%M:%S")
-        ;;
-      30m)
-        START_TIME=$(date -u -v-30M "+%Y-%m-%d %H:%M:%S")
-        ;;
-      1h)
-        START_TIME=$(date -u -v-1H "+%Y-%m-%d %H:%M:%S")
-        ;;
-      24h)
-        START_TIME=$(date -u -v-24H "+%Y-%m-%d %H:%M:%S")
-        ;;
-      *)
-        echo "[ERROR] Invalid period: $PERIOD (use 5m, 30m, 1h, or 24h)"
-        exit 1
-        ;;
-    esac
+    SINCE=$(date -u -v-30M "+%Y-%m-%d %H:%M:%S")
   else
-    # Linux (GNU date)
-    case $PERIOD in
-      5m)
-        START_TIME=$(date -u -d "5 minutes ago" "+%Y-%m-%d %H:%M:%S")
-        ;;
-      30m)
-        START_TIME=$(date -u -d "30 minutes ago" "+%Y-%m-%d %H:%M:%S")
-        ;;
-      1h)
-        START_TIME=$(date -u -d "1 hour ago" "+%Y-%m-%d %H:%M:%S")
-        ;;
-      24h)
-        START_TIME=$(date -u -d "24 hours ago" "+%Y-%m-%d %H:%M:%S")
-        ;;
-      *)
-        echo "[ERROR] Invalid period: $PERIOD (use 5m, 30m, 1h, or 24h)"
-        exit 1
-        ;;
-    esac
+    SINCE=$(date -u -d "30 minutes ago" "+%Y-%m-%d %H:%M:%S")
   fi
 fi
 
-# Record current time BEFORE fetch (this becomes next run's start time)
-# Always use UTC to avoid timezone mismatches with remote server
-CURRENT_TIME=$(date -u "+%Y-%m-%d %H:%M:%S")
-echo "[INFO] Fetching logs from $START_TIME (UTC) to now"
-echo "[INFO] Local time: $(date '+%Y-%m-%d %H:%M:%S %Z')"
-
-# Fetch logs using logs-fetcher script from plugin cache
-# Assumes: REMOTE_HOST, REMOTE_DIR, JOB_LOGS_DIR are set in env
-LOGS_FETCHER_SCRIPT=$(find ~/.claude/plugins/cache -name "fetch_logs_ssh.py" 2>/dev/null | head -1)
-
-if [ -z "$LOGS_FETCHER_SCRIPT" ]; then
-  echo "[ERROR] logs-fetcher plugin not found. Please install aiops-plugin."
-  exit 1
-fi
-
-# First, get the list of files to fetch from remote (for job ID extraction)
-FILE_LIST_CMD="cd ${REMOTE_DIR} && find . -maxdepth 1 -type f -name '*.transform-processed' -newermt '${START_TIME}' -printf '%T@ %f\\n' | sort -rn | cut -d' ' -f2- | head -n ${LIMIT}"
-SSH_RAW_OUTPUT=$(ssh "$REMOTE_HOST" "$FILE_LIST_CMD" 2>&1)
-SSH_EXIT_CODE=$?
-
-if [ $SSH_EXIT_CODE -ne 0 ]; then
-  echo "[ERROR] SSH command to list files failed with exit code: $SSH_EXIT_CODE"
-  echo "[DEBUG] SSH output: $SSH_RAW_OUTPUT"
-  exit 1
-fi
-
-FILE_LIST=$(echo "$SSH_RAW_OUTPUT" | grep -v "WARNING:" | grep -v "vulnerable" | grep -v "upgraded" || true)
-
-# Now fetch the files using the logs-fetcher script
-FETCH_OUTPUT=$(python3 "$LOGS_FETCHER_SCRIPT" \
-  --mode processed \
-  --order desc \
-  --limit "$LIMIT" \
-  --start-time "$START_TIME" \
-  --local-dir "$JOB_LOGS_DIR" \
-  2>&1)
-
-FETCH_EXIT_CODE=$?
-if [ $FETCH_EXIT_CODE -ne 0 ]; then
-  echo "[ERROR] Log fetch failed with exit code: $FETCH_EXIT_CODE"
-  echo "[DEBUG] Fetch output:"
-  echo "$FETCH_OUTPUT"
-  exit 1
-fi
-
-echo "$FETCH_OUTPUT"
+echo "[INFO] Batch RCA Analysis - $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+echo "[INFO] Analyzing events since: $SINCE"
 
 #############################################
-# Step 2: Extract Job IDs from NEWLY FETCHED files
+# Step 1: Query source DB for unanalyzed job IDs
 #############################################
-echo "[STEP 2] Extracting job IDs from newly fetched logs..."
+echo "[STEP 1] Querying source database for unanalyzed jobs..."
 
-# Extract job IDs from the file list we got from SSH
-JOB_IDS=$(echo "$FILE_LIST" | grep -E '^job_[0-9]+\.json\.gz\.transform-processed' | grep -oE 'job_[0-9]+' | sed 's/job_//' | sort -u || true)
+QUERY_ARGS=(--since "$SINCE")
+if [ -n "$LIMIT" ]; then
+  QUERY_ARGS+=(--limit "$LIMIT")
+fi
+
+JOB_IDS=$(python3 "$SCRIPT_DIR/scripts/query_source_db.py" "${QUERY_ARGS[@]}")
+
+if [ $? -ne 0 ]; then
+  echo "[ERROR] Source DB query failed"
+  exit 1
+fi
 
 if [ -z "$JOB_IDS" ]; then
-  echo ""
-  echo "=========================================="
-  echo "[INFO] No new jobs found in time window"
-  echo "[INFO] Time window: $START_TIME → $CURRENT_TIME (UTC)"
-  echo "[INFO] Next run will check from: $CURRENT_TIME"
-  echo "=========================================="
-  echo ""
-
-  # Update timestamp even when no jobs (prevents checking same window repeatedly)
-  echo "$CURRENT_TIME" > "$TIMESTAMP_FILE"
+  echo "[INFO] No unanalyzed jobs found"
   echo "[SUCCESS] Batch RCA completed at $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
   exit 0
 fi
 
-TOTAL_JOBS=$(echo "$JOB_IDS" | wc -l | tr -d ' ')
-echo "[INFO] Found $TOTAL_JOBS job(s): $(echo $JOB_IDS | tr '\n' ' ')"
+JOB_COUNT=$(echo "$JOB_IDS" | wc -l | tr -d ' ')
+JOBS_LIST=$(echo "$JOB_IDS" | tr '\n' ' ' | sed 's/ $//')
+echo "[INFO] Found $JOB_COUNT job(s) to analyze: $JOBS_LIST"
 
 #############################################
-# Step 3: Filter Already-Analyzed Jobs
+# Step 2: Build Dynamic Claude Prompt
 #############################################
-echo "[STEP 3] Filtering out already-analyzed jobs..."
-
-# Create state file if not exists
-mkdir -p "$(dirname "$STATE_FILE")"
-touch "$STATE_FILE"
-
-# Filter new jobs using comm
-NEW_JOBS=$(comm -23 \
-  <(echo "$JOB_IDS" | sort) \
-  <(sort "$STATE_FILE") \
-)
-
-if [ -z "$NEW_JOBS" ]; then
-  echo "[INFO] No new jobs to analyze (all already processed)"
-  # Update timestamp to advance cursor for next run
-  echo "$CURRENT_TIME" > "$TIMESTAMP_FILE"
-  exit 0
-fi
-
-NEW_COUNT=$(echo "$NEW_JOBS" | wc -l | tr -d ' ')
-echo "[INFO] Found $NEW_COUNT new job(s) to analyze: $(echo $NEW_JOBS | tr '\n' ' ')"
-
-#############################################
-# Step 4: Build Dynamic Claude Prompt
-#############################################
-echo "[STEP 4] Building Claude prompt for parallel RCA..."
-
-# Convert job list to space-separated for prompt
-JOBS_LIST=$(echo "$NEW_JOBS" | tr '\n' ' ' | sed 's/ $//')
+echo "[STEP 2] Building Claude prompt for parallel RCA..."
 
 # Build the orchestration prompt
 read -r -d '' CLAUDE_PROMPT <<EOF || true
@@ -252,7 +124,7 @@ You are running in headless mode to analyze failed jobs in parallel.
 
    Agent({
      description: "RCA for job {JOB_ID}",
-     prompt: "Invoke the 'root-cause-analysis' skill for job {JOB_ID}. Use: Skill({skill: 'root-cause-analysis', args: '{JOB_ID}'}). Follow all skill instructions including Step 5 analysis and upload. Report completion status.",
+     prompt: "Invoke the 'root-cause-analysis' skill for job {JOB_ID}. Use: Skill({skill: 'root-cause-analysis', args: '{JOB_ID}'}). Follow all skill instructions including Step 5 analysis. Report completion status.",
      run_in_background: true
    })
 
@@ -261,7 +133,7 @@ You are running in headless mode to analyze failed jobs in parallel.
 2. **Wait for completion** - You'll receive task-notification for each agent when done.
 
 3. **Aggregate results** - After all agents complete:
-   - Read each job's step5_analysis_summary.json from: ~/.claude/skills/root-cause-analysis/.analysis/{job_id}/step5_analysis_summary.json
+   - Read each job's step5_analysis_summary.json from the .analysis/{job_id}/ directory
    - Create aggregated report with:
      * Total jobs analyzed
      * Root cause category breakdown (count by category)
@@ -280,11 +152,11 @@ You are running in headless mode to analyze failed jobs in parallel.
 EOF
 
 #############################################
-# Step 5: Setup MLflow
+# Step 3: Setup MLflow
 #############################################
 MLFLOW_VENV="$SCRIPT_DIR/.mlflow-venv"
 if grep -q "MLFLOW_CLAUDE_TRACING_ENABLED.*true" "$SETTINGS_FILE" 2>/dev/null; then
-  echo "[STEP 5] Setting up MLflow tracing..."
+  echo "[STEP 3] Setting up MLflow tracing..."
 
   if [ ! -d "$MLFLOW_VENV" ]; then
     echo "[INFO] Creating MLflow venv (first run)..."
@@ -295,42 +167,27 @@ if grep -q "MLFLOW_CLAUDE_TRACING_ENABLED.*true" "$SETTINGS_FILE" 2>/dev/null; t
 
   echo "[INFO] MLflow tracing enabled"
 else
-  echo "[STEP 5] MLflow tracing disabled (skipping)"
+  echo "[STEP 3] MLflow tracing disabled (skipping)"
 fi
 
 #############################################
-# Step 6: Execute Claude Headless
+# Step 4: Execute Claude Headless
 #############################################
-echo "[STEP 6] Executing Claude in headless mode..."
+echo "[STEP 4] Executing Claude in headless mode..."
 
 mkdir -p "$REPORT_DIR"
 
 # Run claude in non-interactive mode with permissions bypass for testing
 # Note: -p/--print flag for non-interactive output
 # Using --dangerously-skip-permissions for testing only
-# Run from script directory to pick up .claude/settings.json
-cd "$SCRIPT_DIR" || exit 1
+# Run from repo root to pick up .claude/settings.json (MLflow hooks, env vars)
+REPO_ROOT="$SCRIPT_DIR/../.."
+cd "$REPO_ROOT" || exit 1
 
 claude -p --dangerously-skip-permissions "$CLAUDE_PROMPT" || {
   echo "[ERROR] Claude execution failed"
   exit 1
 }
 
-#############################################
-# Step 7: Update State
-#############################################
-echo "[STEP 7] Updating analyzed jobs state..."
-
-# Append new jobs to state file
-echo "$NEW_JOBS" >> "$STATE_FILE"
-
-# Keep state file sorted and deduplicated
-sort -u "$STATE_FILE" -o "$STATE_FILE"
-
-# Save timestamp ONLY AFTER successful analysis (prevents lost jobs on failure)
-echo "$CURRENT_TIME" > "$TIMESTAMP_FILE"
-echo "[INFO] Saved timestamp for next run: $CURRENT_TIME"
-
 echo "[SUCCESS] Batch RCA completed at $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
 echo "[INFO] Report: $REPORT_DIR/batch_${TIMESTAMP}.json"
-echo "[INFO] Analyzed jobs added to: $STATE_FILE"
