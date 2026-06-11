@@ -24,7 +24,7 @@ REPORT_DIR="$SCRIPT_DIR/reports"
 TIMESTAMP=$(date -u +%Y%m%d_%H%M%S)
 
 # Load environment variables from Claude settings.json
-SETTINGS_FILE="$SCRIPT_DIR/../../.claude/settings.json"
+SETTINGS_FILE="$SCRIPT_DIR/.claude/settings.json"
 if [ ! -f "$SETTINGS_FILE" ]; then
   echo "[ERROR] Claude settings.json not found at: $SETTINGS_FILE"
   echo "[ERROR] Please ensure .claude/settings.json exists with env variables configured"
@@ -181,8 +181,8 @@ mkdir -p "$REPORT_DIR"
 # Note: -p/--print flag for non-interactive output
 # Using --dangerously-skip-permissions for testing only
 # Run from repo root to pick up .claude/settings.json (MLflow hooks, env vars)
-REPO_ROOT="$SCRIPT_DIR/../.."
-cd "$REPO_ROOT" || exit 1
+
+cd "$SCRIPT_DIR" || exit 1
 
 claude -p --dangerously-skip-permissions "$CLAUDE_PROMPT" || {
   echo "[ERROR] Claude execution failed"
