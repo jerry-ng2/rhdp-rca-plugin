@@ -26,7 +26,7 @@ TIMESTAMP=$(date -u +%Y%m%d_%H%M%S)
 BATCH_ID="batch_${TIMESTAMP}"
 
 # Load environment variables from Claude settings.json
-SETTINGS_FILE="$SCRIPT_DIR/.claude/settings.json"
+SETTINGS_FILE="$SCRIPT_DIR/../../.claude/settings.json"
 if [ ! -f "$SETTINGS_FILE" ]; then
   echo "[ERROR] Claude settings.json not found at: $SETTINGS_FILE"
   echo "[ERROR] Please ensure .claude/settings.json exists with env variables configured"
@@ -204,14 +204,27 @@ mkdir -p "$REPORT_DIR"
 # Run claude in non-interactive mode with permissions bypass for testing
 # Note: -p/--print flag for non-interactive output
 # Using --dangerously-skip-permissions for testing only
-# Run from repo root to pick up .claude/settings.json (MLflow hooks, env vars)
-
+# Run from script directory to pick up .claude/settings.json
 cd "$SCRIPT_DIR" || exit 1
 
 claude -p --dangerously-skip-permissions "$CLAUDE_PROMPT" || {
   echo "[ERROR] Claude execution failed"
   exit 1
 }
+
+#############################################
+# Step 5: Store report in local DB
+#############################################
+echo "[STEP 5] Storing report in local database..."
+
+REPORT_FILE="$REPORT_DIR/batch_${TIMESTAMP}.json"
+if [ -f "$REPORT_FILE" ]; then
+  python3 "$SCRIPT_DIR/scripts/store_report.py" "$REPORT_FILE" || {
+    echo "[WARN] Failed to store report in database (non-fatal)"
+  }
+else
+  echo "[WARN] Report file not found at $REPORT_FILE, skipping DB store"
+fi
 
 echo "[SUCCESS] Batch RCA completed at $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
 echo "[INFO] Report: $REPORT_DIR/${BATCH_ID}.json"
