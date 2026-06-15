@@ -21,7 +21,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPORT_DIR="$SCRIPT_DIR/reports"
+SCHEMA_FILE="$SCRIPT_DIR/schemas/batch_report.schema.json"
 TIMESTAMP=$(date -u +%Y%m%d_%H%M%S)
+BATCH_ID="batch_${TIMESTAMP}"
 
 # Load environment variables from Claude settings.json
 SETTINGS_FILE="$SCRIPT_DIR/../../.claude/settings.json"
@@ -112,11 +114,18 @@ echo "[INFO] Found $JOB_COUNT job(s) to analyze: $JOBS_LIST"
 #############################################
 echo "[STEP 2] Building Claude prompt for parallel RCA..."
 
+if [ ! -f "$SCHEMA_FILE" ]; then
+  echo "[ERROR] Batch report schema not found at: $SCHEMA_FILE"
+  exit 1
+fi
+
 # Build the orchestration prompt
 read -r -d '' CLAUDE_PROMPT <<EOF || true
 You are running in headless mode to analyze failed jobs in parallel.
 
 **Job IDs to analyze:** $JOBS_LIST
+**Batch ID:** $BATCH_ID
+**Jobs requested:** $JOB_COUNT
 
 **Instructions:**
 
@@ -129,19 +138,34 @@ You are running in headless mode to analyze failed jobs in parallel.
    })
 
    **CRITICAL:** All agents must be in ONE response for true parallelism.
+   Record agent_spawn as the ISO 8601 UTC timestamp when agents are launched.
 
 2. **Wait for completion** - You'll receive task-notification for each agent when done.
+   Record per-job duration_ms and status (completed|failed|timeout) in timing.agent_completion.
 
 3. **Aggregate results** - After all agents complete:
-   - Read each job's step5_analysis_summary.json from the .analysis/{job_id}/ directory
-   - Create aggregated report with:
-     * Total jobs analyzed
-     * Root cause category breakdown (count by category)
-     * High-priority recommendations (collect top 5 from all jobs)
-     * Any failed analyses
-   - Report time taken for each step (agent spawn, wait, aggregation)
+   - Read each job's step5_analysis_summary.json from:
+     .analysis/{job_id}/step5_analysis_summary.json
+   - Also read step1_job_context.json from the same .analysis/{job_id}/ directory for guid,
+     catalog_item, cluster/platform, and job_duration_seconds
+   - For each analyzed job, set job_summaries[].root_cause_summary from step5 root_cause.summary
+   - Detect cross-job patterns (same root cause, same failing file, same missing resource)
+   - Build the batch report JSON that conforms EXACTLY to the schema at:
+     $SCHEMA_FILE
+   - Read the schema file before writing the report; every required field must be present
+   - Use these fixed values:
+     * batch_id: "$BATCH_ID"
+     * total_jobs_requested: $JOB_COUNT
+     * total_jobs_analyzed: count of jobs with a valid step5_analysis_summary.json
+     * total_jobs_failed: count of jobs whose agent failed or lack step5 output
+     * confidence_breakdown: tally high/medium/low from each job's root_cause.confidence
+     * high_priority_recommendations: top 5 across all jobs, ranked 1-5, deduplicated where possible
+     * failed_analyses: one entry per failed job (empty array when none failed)
+     * cross_job_patterns: shared patterns across 2+ jobs (empty array when none)
+     * analysis_path for each job: ".analysis/{job_id}/step5_analysis_summary.json"
 
-4. **Save report** - Write to: $REPORT_DIR/batch_${TIMESTAMP}.json
+4. **Save report** - Write ONLY valid JSON (no markdown, no comments) to:
+   $REPORT_DIR/${BATCH_ID}.json
 
 5. **Output completion summary** - Print to stdout:
    - Number of jobs analyzed successfully
@@ -203,4 +227,4 @@ else
 fi
 
 echo "[SUCCESS] Batch RCA completed at $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
-echo "[INFO] Report: $REPORT_FILE"
+echo "[INFO] Report: $REPORT_DIR/${BATCH_ID}.json"
