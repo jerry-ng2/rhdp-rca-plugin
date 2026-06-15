@@ -224,7 +224,7 @@
               "status",
               "root_cause_category",
               "confidence",
-              "summary",
+              "root_cause_summary",
               "guid",
               "catalog_item",
               "cluster",
@@ -253,9 +253,10 @@
                 "type": "string",
                 "enum": ["high", "medium", "low"]
               },
-              "summary": {
+              "root_cause_summary": {
                 "type": "string",
-                "minLength": 1
+                "minLength": 1,
+                "description": "Root cause narrative from step5 root_cause.summary"
               },
               "guid": {
                 "type": "string",
@@ -286,14 +287,14 @@
             "required": [
               "job_id",
               "status",
-              "summary",
+              "root_cause_summary",
               "analysis_duration_ms",
               "analysis_path"
             ],
             "properties": {
               "job_id": {"type": "string"},
               "status": {"const": "failed"},
-              "summary": {
+              "root_cause_summary": {
                 "type": "string",
                 "minLength": 1,
                 "description": "Why RCA failed for this job"
