@@ -26,7 +26,7 @@ TIMESTAMP=$(date -u +%Y%m%d_%H%M%S)
 BATCH_ID="batch_${TIMESTAMP}"
 
 # Load environment variables from Claude settings.json
-SETTINGS_FILE="$SCRIPT_DIR/../../.claude/settings.json"
+SETTINGS_FILE="$SCRIPT_DIR/.claude/settings.json"
 if [ ! -f "$SETTINGS_FILE" ]; then
   echo "[ERROR] Claude settings.json not found at: $SETTINGS_FILE"
   echo "[ERROR] Please ensure .claude/settings.json exists with env variables configured"
@@ -145,10 +145,9 @@ You are running in headless mode to analyze failed jobs in parallel.
 
 3. **Aggregate results** - After all agents complete:
    - Read each job's step5_analysis_summary.json from:
-     .analysis/{job_id}/step5_analysis_summary.json
+     .claude/skills/root-cause-analysis/.analysis/{job_id}/step5_analysis_summary.json
    - Also read step1_job_context.json from the same .analysis/{job_id}/ directory for guid,
      catalog_item, cluster/platform, and job_duration_seconds
-   - For each analyzed job, set job_summaries[].root_cause_summary from step5 root_cause.summary
    - Detect cross-job patterns (same root cause, same failing file, same missing resource)
    - Build the batch report JSON that conforms EXACTLY to the schema at:
      $SCHEMA_FILE
@@ -204,7 +203,8 @@ mkdir -p "$REPORT_DIR"
 # Run claude in non-interactive mode with permissions bypass for testing
 # Note: -p/--print flag for non-interactive output
 # Using --dangerously-skip-permissions for testing only
-# Run from script directory to pick up .claude/settings.json
+# Run from repo root to pick up .claude/settings.json (MLflow hooks, env vars)
+
 cd "$SCRIPT_DIR" || exit 1
 
 claude -p --dangerously-skip-permissions "$CLAUDE_PROMPT" || {
