@@ -145,7 +145,7 @@ You are running in headless mode to analyze failed jobs in parallel.
 
 3. **Aggregate results** - After all agents complete:
    - Read each job's step5_analysis_summary.json from:
-     .claude/skills/root-cause-analysis/.analysis/{job_id}/step5_analysis_summary.json
+     .analysis/{job_id}/step5_analysis_summary.json
    - Also read step1_job_context.json from the same .analysis/{job_id}/ directory for guid,
      catalog_item, cluster/platform, and job_duration_seconds
    - For each analyzed job, set job_summaries[].root_cause_summary from step5 root_cause.summary
