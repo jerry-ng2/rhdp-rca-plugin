@@ -11,22 +11,9 @@ import sys
 from typing import Any
 
 SCHEMA = """
-CREATE TABLE IF NOT EXISTS batch_reports (
-    batch_id TEXT PRIMARY KEY,
-    timestamp TEXT NOT NULL,
-    total_jobs_requested INTEGER NOT NULL,
-    total_jobs_analyzed INTEGER NOT NULL,
-    total_jobs_failed INTEGER NOT NULL,
-    root_cause_breakdown TEXT,
-    recommendations TEXT,
-    failed_analyses TEXT,
-    timing TEXT,
-    raw_json TEXT NOT NULL
-);
-
 CREATE TABLE IF NOT EXISTS job_results (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    batch_id TEXT NOT NULL REFERENCES batch_reports(batch_id),
+    batch_id TEXT NOT NULL,
     job_id TEXT NOT NULL,
     status TEXT,
     root_cause_category TEXT,
@@ -36,17 +23,33 @@ CREATE TABLE IF NOT EXISTS job_results (
     catalog_item TEXT,
     guid TEXT,
     job_duration_seconds REAL,
-    analysis_file TEXT,
+    cross_job_pattern TEXT,
+    cross_job_pattern_description TEXT,
+    ticket_link TEXT,
+    is_open INTEGER,
     UNIQUE(batch_id, job_id)
 );
 """
 
 
+MIGRATIONS = [
+    "ALTER TABLE job_results ADD COLUMN cross_job_pattern TEXT",
+    "ALTER TABLE job_results ADD COLUMN cross_job_pattern_description TEXT",
+    "ALTER TABLE job_results ADD COLUMN ticket_link TEXT",
+    "ALTER TABLE job_results ADD COLUMN is_open INTEGER",
+    "UPDATE job_results SET is_open = 1 WHERE is_open IS NULL",
+]
+
+
 def init_db(db_path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(SCHEMA)
+    for stmt in MIGRATIONS:
+        try:
+            conn.execute(stmt)
+        except sqlite3.OperationalError:
+            pass  # column already exists
     return conn
 
 
@@ -59,41 +62,28 @@ def store_report(conn: sqlite3.Connection, report: dict[str, Any], filename: str
         print("[ERROR] Cannot determine batch_id", file=sys.stderr)
         return False
 
-    try:
-        conn.execute(
-            """INSERT INTO batch_reports
-               (batch_id, timestamp, total_jobs_requested, total_jobs_analyzed,
-                total_jobs_failed, root_cause_breakdown, recommendations,
-                failed_analyses, timing, raw_json)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                batch_id,
-                report.get("timestamp") or report.get("generated_at", ""),
-                report.get("total_jobs_requested", 0),
-                report.get("total_jobs_analyzed", report.get("successful_analyses", 0)),
-                report.get("total_jobs_failed", report.get("total_failures", report.get("failed_analyses_count", 0))),
-                json.dumps(report.get("root_cause_category_breakdown")),
-                json.dumps(report.get("high_priority_recommendations")),
-                json.dumps(report.get("failed_analyses")),
-                json.dumps(report.get("timing")),
-                json.dumps(report),
-            ),
-        )
-    except sqlite3.IntegrityError:
-        print(f"[WARN] Batch {batch_id} already exists, skipping", file=sys.stderr)
-        return False
+    # Build a lookup from job_id -> pattern info for cross_job_patterns
+    pattern_by_job: dict[str, dict[str, str | None]] = {}
+    for p in report.get("cross_job_patterns", []):
+        for jid in p.get("jobs", []):
+            pattern_by_job[str(jid)] = {
+                "pattern": p.get("pattern"),
+                "description": p.get("description"),
+            }
 
     jobs = report.get("job_results") or report.get("job_summaries") or report.get("jobs", [])
     for job in jobs:
+        jid = str(job.get("job_id", ""))
+        pinfo = pattern_by_job.get(jid, {})
         conn.execute(
             """INSERT OR IGNORE INTO job_results
                (batch_id, job_id, status, root_cause_category, root_cause_summary,
                 confidence, cluster, catalog_item, guid, job_duration_seconds,
-                analysis_file)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                cross_job_pattern, cross_job_pattern_description, is_open)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 batch_id,
-                str(job.get("job_id", "")),
+                jid,
                 job.get("status"),
                 job.get("root_cause_category"),
                 job.get("root_cause_summary"),
@@ -102,7 +92,9 @@ def store_report(conn: sqlite3.Connection, report: dict[str, Any], filename: str
                 job.get("catalog_item"),
                 job.get("guid"),
                 job.get("job_duration_seconds"),
-                job.get("analysis_file"),
+                pinfo.get("pattern"),
+                pinfo.get("description"),
+                1,
             ),
         )
 
