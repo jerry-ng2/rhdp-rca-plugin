@@ -1,0 +1,132 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: batch-rca-analyzer
+  namespace: claude-ci-test
+spec:
+  schedule: "7,37 * * * *"
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            app: batch-rca-analyzer
+        spec:
+          restartPolicy: Never
+          initContainers:
+          - name: setup-ssh
+            image: <YOUR_REGISTRY>/claude-ci-test/claude-rca:latest
+            command:
+            - bash
+            - -c
+            args:
+            - |
+              echo "[INIT] Setting up SSH and configs..."
+              mkdir -p /workspace/.ssh /workspace/.claude /workspace/.config/gcloud
+              cp /tmp/ssh-secret/id_ed25519 /workspace/.ssh/id_ed25519
+              chmod 600 /workspace/.ssh/id_ed25519
+              cat > /workspace/.ssh/config <<EOF
+              Host ci-bastion
+                HostName $(cat /tmp/ssh-secret/bastion-hostname)
+                User $(cat /tmp/ssh-secret/bastion-username)
+                Port $(cat /tmp/ssh-secret/bastion-port)
+                IdentityFile /workspace/.ssh/id_ed25519
+                StrictHostKeyChecking no
+                UserKnownHostsFile /dev/null
+
+              Host ci-jumpbox
+                HostName $(cat /tmp/ssh-secret/jumpbox-hostname)
+                User $(cat /tmp/ssh-secret/jumpbox-username)
+                Port $(cat /tmp/ssh-secret/jumpbox-port)
+                IdentityFile /workspace/.ssh/id_ed25519
+                StrictHostKeyChecking no
+                UserKnownHostsFile /dev/null
+              EOF
+              chmod 600 /workspace/.ssh/config
+              cp /tmp/claude-settings/settings.json /workspace/.claude/settings.json
+              cp /tmp/gcp-creds/application_default_credentials.json /workspace/.config/gcloud/application_default_credentials.json
+
+              echo "[INIT] Installing skills to local directory..."
+              mkdir -p /workspace/.claude/skills
+              if [ -d /workspace/.claude/plugins/marketplaces/aiops-marketplace/skills ]; then
+                # Copy skills excluding .analysis (job results), __pycache__, tests, README.md
+                rsync -a --exclude='.analysis' --exclude='__pycache__' --exclude='*.pyc' --exclude='tests' --exclude='README.md' \
+                  /workspace/.claude/plugins/marketplaces/aiops-marketplace/skills/ \
+                  /workspace/.claude/skills/
+                echo "[INIT] Skills installed: $(ls /workspace/.claude/skills/ | tr '\n' ' ')"
+                echo "[INIT] Skills size: $(du -sh /workspace/.claude/skills 2>/dev/null || echo 'unknown')"
+              else
+                echo "[INIT] WARNING: No marketplace skills found at /workspace/.claude/plugins/marketplaces/aiops-marketplace/skills"
+              fi
+            volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+            - name: ssh-secret
+              mountPath: /tmp/ssh-secret
+              readOnly: true
+            - name: claude-settings
+              mountPath: /tmp/claude-settings
+              readOnly: true
+            - name: gcp-creds
+              mountPath: /tmp/gcp-creds
+              readOnly: true
+          containers:
+          - name: batch-rca
+            image: <YOUR_REGISTRY>/claude-ci-test/claude-rca:latest
+            command:
+            - /bin/bash
+            - -c
+            - |
+              cd /workspace
+              ./batch_rca_headless.sh --limit 15 --period 30m
+            env:
+            - name: CLAUDE_CODE_USE_VERTEX
+              value: "1"
+            - name: CLOUD_ML_REGION
+              valueFrom:
+                secretKeyRef:
+                  name: claude-vertex-creds
+                  key: CLOUD_ML_REGION
+            - name: ANTHROPIC_VERTEX_PROJECT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: claude-vertex-creds
+                  key: ANTHROPIC_VERTEX_PROJECT_ID
+            - name: GOOGLE_APPLICATION_CREDENTIALS
+              value: /workspace/.config/gcloud/application_default_credentials.json
+            - name: HOME
+              value: /workspace
+            - name: CLAUDE_CODE_ACCEPT_TOS
+              value: "true"
+            resources:
+              requests:
+                cpu: 500m
+                memory: 512Mi
+              limits:
+                cpu: "2"
+                memory: 2Gi
+            volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+          volumes:
+          - name: workspace
+            persistentVolumeClaim:
+              claimName: batch-rca-pvc
+          - name: gcp-creds
+            secret:
+              secretName: claude-vertex-creds
+              items:
+              - key: gcp-credentials
+                path: application_default_credentials.json
+          - name: claude-settings
+            secret:
+              secretName: rca-skill-config
+              items:
+              - key: settings.json
+                path: settings.json
+          - name: ssh-secret
+            secret:
+              secretName: ci-ssh-key
