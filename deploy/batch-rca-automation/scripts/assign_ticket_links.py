@@ -95,6 +95,7 @@ def assign_links(report: dict[str, Any], jira_data: dict[str, Any]) -> dict[str,
     for job in report.get("job_summaries", []):
         best = pick_issue(job, issues)
         job["ticket_link"] = best["ticket_url"]
+        job["is_open"] = best.get("is_open", True)
 
     return report
 

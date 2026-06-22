@@ -8,6 +8,19 @@ import sys
 from typing import Any
 
 
+CLOSED_STATUSES = frozenset(
+    s.lower()
+    for s in ("Done", "Closed", "Resolved", "Cancelled", "Complete", "Completed")
+)
+
+
+def is_issue_open(status: str) -> bool:
+    """Return True when the Jira issue is not in a terminal/closed status."""
+    if not status:
+        return True
+    return status.strip().lower() not in CLOSED_STATUSES
+
+
 def _plain_description(description: Any) -> str:
     if description is None:
         return ""
@@ -24,7 +37,7 @@ def _plain_description(description: Any) -> str:
     return str(description)
 
 
-def normalize_issue(issue: dict[str, Any], base_url: str, sprint_name: str = "") -> dict[str, str]:
+def normalize_issue(issue: dict[str, Any], base_url: str, sprint_name: str = "") -> dict[str, Any]:
     if "fields" in issue:
         key = issue["key"]
         fields = issue["fields"]
@@ -37,19 +50,22 @@ def normalize_issue(issue: dict[str, Any], base_url: str, sprint_name: str = "")
             "status": status_name,
             "sprint_name": sprint_name,
             "ticket_url": f"{base_url.rstrip('/')}/browse/{key}",
+            "is_open": is_issue_open(status_name),
         }
 
     key = issue.get("key", "")
     ticket_url = issue.get("ticket_url") or (
         f"{base_url.rstrip('/')}/browse/{key}" if key else ""
     )
+    status = issue.get("status", "")
     return {
         "key": key,
         "summary": issue.get("summary", ""),
         "description": issue.get("description", ""),
-        "status": issue.get("status", ""),
+        "status": status,
         "sprint_name": issue.get("sprint_name", sprint_name),
         "ticket_url": ticket_url,
+        "is_open": issue.get("is_open", is_issue_open(status)),
     }
 
 

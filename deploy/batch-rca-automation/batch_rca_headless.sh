@@ -149,8 +149,8 @@ Steps (complete ALL before responding):
 1. Call mcp__atlassian__jira_get_sprints_from_board with board_id=\"${JIRA_BOARD_ID}\" and state=\"active\"
 2. For EACH active sprint returned, call mcp__atlassian__jira_get_sprint_issues with that sprint_id and limit=100
 3. Respond with ONLY a single JSON object (no markdown fences, no commentary) in this exact shape:
-{\"sprints\":[{\"id\":<number>,\"name\":<string>}],\"issues\":[{\"key\":<string>,\"summary\":<string>,\"status\":<string>,\"sprint_name\":<string>,\"ticket_url\":<string>}]}
-For each issue, ticket_url MUST be ${JIRA_BASE_URL}/browse/{key}.
+{\"sprints\":[{\"id\":<number>,\"name\":<string>}],\"issues\":[{\"key\":<string>,\"summary\":<string>,\"status\":<string>,\"sprint_name\":<string>,\"ticket_url\":<string>,\"is_open\":<boolean>}]}
+For each issue, ticket_url MUST be ${JIRA_BASE_URL}/browse/{key} and is_open MUST be true unless status is Done, Closed, Resolved, or Cancelled.
 Include ALL issues from active sprints regardless of status."
 
 cd "$REPO_ROOT" || exit 1
@@ -243,7 +243,8 @@ $JIRA_SPRINT_ISSUES
      against jira_sprint_tickets.issues above. Pick the single best-matching issue from that
      list only (never invent a ticket key). Multiple jobs with the same failure pattern MAY
      share the same ticket_link.
-     Set ticket_link to the matching issue's ticket_url.
+     Set ticket_link to the matching issue's ticket_url and is_open to the matching issue's
+     is_open (boolean, default true when status is not Done/Closed/Resolved/Cancelled).
      ticket_link is REQUIRED on every job_summaries entry and MUST be a URL string — ALWAYS
      pick the best available issue from jira_sprint_tickets.issues; null is NOT allowed.
    - Include jira_sprint_tickets in the report (copy the pre-fetched JSON above verbatim)

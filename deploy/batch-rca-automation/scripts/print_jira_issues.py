@@ -35,6 +35,8 @@ def main(argv: list[str] | None = None) -> int:
         summary = issue.get("summary", "")
         url = issue.get("ticket_url", "")
         print(f"  - {key} [{status}] {summary}")
+        is_open = issue.get("is_open", True)
+        print(f"    is_open={is_open}")
         if url:
             print(f"    {url}")
 
