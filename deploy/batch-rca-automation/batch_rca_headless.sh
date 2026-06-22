@@ -25,6 +25,10 @@ REPORT_DIR="$SCRIPT_DIR/reports"
 SCHEMA_FILE="$SCRIPT_DIR/schemas/batch_report.schema.json"
 TIMESTAMP=$(date -u +%Y%m%d_%H%M%S)
 BATCH_ID="batch_${TIMESTAMP}"
+JIRA_BOARD_URL="https://redhat.atlassian.net/jira/software/c/projects/GPTEINFRA/boards/1290"
+JIRA_BOARD_ID="1290"
+JIRA_PROJECT_KEY="GPTEINFRA"
+JIRA_BASE_URL="https://redhat.atlassian.net"
 
 # Load environment variables from Claude settings.json
 # Prefer local override (e.g. OpenShift workspace), then repo-root settings
@@ -123,6 +127,7 @@ fi
 JOB_COUNT=$(echo "$JOB_IDS" | wc -l | tr -d ' ')
 JOBS_LIST=$(echo "$JOB_IDS" | tr '\n' ' ' | sed 's/ $//')
 echo "[INFO] Found $JOB_COUNT job(s) to analyze: $JOBS_LIST"
+echo "[INFO] Jira board for ticket matching: $JIRA_BOARD_URL"
 
 #############################################
 # Step 1b: Query historical open issues
@@ -131,6 +136,50 @@ echo "[STEP 1b] Querying historical open issues..."
 OPEN_ISSUES=$(python3 "$SCRIPT_DIR/scripts/query_open_issues.py" --limit 30 2>/dev/null || echo "[]")
 OPEN_COUNT=$(echo "$OPEN_ISSUES" | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo "0")
 echo "[INFO] Found $OPEN_COUNT historical open issue group(s)"
+
+#############################################
+# Step 1c: Fetch Jira sprint issues via MCP (before RCA)
+#############################################
+JIRA_ISSUES_FILE="$REPORT_DIR/.jira_sprint_${TIMESTAMP}.json"
+echo "[STEP 1c] Fetching Jira sprint issues via Atlassian MCP..."
+
+JIRA_FETCH_PROMPT="You MUST use Atlassian Jira MCP tools only. Do NOT spawn agents, invoke skills, or run RCA.
+
+Steps (complete ALL before responding):
+1. Call mcp__atlassian__jira_get_sprints_from_board with board_id=\"${JIRA_BOARD_ID}\" and state=\"active\"
+2. For EACH active sprint returned, call mcp__atlassian__jira_get_sprint_issues with that sprint_id and limit=100
+3. Respond with ONLY a single JSON object (no markdown fences, no commentary) in this exact shape:
+{\"sprints\":[{\"id\":<number>,\"name\":<string>}],\"issues\":[{\"key\":<string>,\"summary\":<string>,\"status\":<string>,\"sprint_name\":<string>,\"ticket_url\":<string>}]}
+For each issue, ticket_url MUST be ${JIRA_BASE_URL}/browse/{key}.
+Include ALL issues from active sprints regardless of status."
+
+cd "$REPO_ROOT" || exit 1
+if claude -p --dangerously-skip-permissions "$JIRA_FETCH_PROMPT" > "${JIRA_ISSUES_FILE}.raw" 2>&1; then
+  if python3 "$SCRIPT_DIR/scripts/extract_json_object.py" "${JIRA_ISSUES_FILE}.raw" > "${JIRA_ISSUES_FILE}.parsed" 2>/dev/null; then
+    python3 "$SCRIPT_DIR/scripts/normalize_jira_sprint_issues.py" \
+      "${JIRA_ISSUES_FILE}.parsed" \
+      --base-url "$JIRA_BASE_URL" \
+      --output "$JIRA_ISSUES_FILE"
+    echo "[INFO] Parsed Jira sprint issues from MCP response"
+  else
+    echo "[WARN] Failed to parse Jira JSON from MCP response; using empty issue list"
+    echo '{"sprints":[],"issues":[]}' > "$JIRA_ISSUES_FILE"
+  fi
+else
+  echo "[WARN] Jira MCP fetch call failed; using empty issue list"
+  echo '{"sprints":[],"issues":[]}' > "$JIRA_ISSUES_FILE"
+fi
+
+JIRA_ISSUE_COUNT=$(python3 -c "import json; print(len(json.load(open('$JIRA_ISSUES_FILE')).get('issues',[])))")
+echo "[INFO] Found $JIRA_ISSUE_COUNT Jira issue(s) in active sprint(s)"
+python3 "$SCRIPT_DIR/scripts/print_jira_issues.py" "$JIRA_ISSUES_FILE"
+
+if [ "$JIRA_ISSUE_COUNT" -eq 0 ]; then
+  echo "[ERROR] No Jira sprint issues fetched — cannot assign ticket_link. Check Atlassian MCP auth."
+  exit 1
+fi
+
+JIRA_SPRINT_ISSUES=$(cat "$JIRA_ISSUES_FILE")
 
 #############################################
 # Step 2: Build Dynamic Claude Prompt
@@ -159,6 +208,13 @@ root_cause_summary). Include matches in the historical_correlations array in the
 
 $OPEN_ISSUES
 
+**Jira Sprint Tickets (pre-fetched via MCP — use ONLY this list for ticket_link):**
+The following issues were fetched from active sprints on board $JIRA_BOARD_ID before this run.
+Copy this list verbatim into the batch report field jira_sprint_tickets.
+Do NOT re-fetch Jira during aggregation.
+
+$JIRA_SPRINT_ISSUES
+
 **Instructions:**
 
 1. **Spawn parallel agents** - For EACH job ID above, spawn a background agent in a SINGLE message with multiple Agent tool calls:
@@ -182,6 +238,15 @@ $OPEN_ISSUES
      catalog_item, cluster/platform, and job_duration_seconds
    - Detect cross-job patterns: first group jobs by root_cause_category, then within each
      group look for shared signals (same failing file, same missing resource, similar summary)
+   - For each job in job_summaries, compare the RCA output (root_cause_summary,
+     root_cause_category, catalog_item, cluster, platform, failing_role, failing_github_path)
+     against jira_sprint_tickets.issues above. Pick the single best-matching issue from that
+     list only (never invent a ticket key). Multiple jobs with the same failure pattern MAY
+     share the same ticket_link.
+     Set ticket_link to the matching issue's ticket_url.
+     ticket_link is REQUIRED on every job_summaries entry and MUST be a URL string — ALWAYS
+     pick the best available issue from jira_sprint_tickets.issues; null is NOT allowed.
+   - Include jira_sprint_tickets in the report (copy the pre-fetched JSON above verbatim)
    - Build the batch report JSON that conforms EXACTLY to the schema at:
      $SCHEMA_FILE
    - Read the schema file before writing the report; every required field must be present
@@ -208,6 +273,8 @@ $OPEN_ISSUES
 5. **Output completion summary** - Print to stdout:
    - Number of jobs analyzed successfully
    - Number of failures (if any)
+   - All Jira sprint tickets (key, status, summary, ticket_url) from jira_sprint_tickets.issues
+   - ticket_link assigned for every job_summaries entry
    - Report location
 
 **Note:** The root-cause-analysis skill handles Steps 1-5 automatically, including Claude's analysis in Step 5.
@@ -258,6 +325,16 @@ echo "[STEP 5] Storing report in local database..."
 
 REPORT_FILE="$REPORT_DIR/batch_${TIMESTAMP}.json"
 if [ -f "$REPORT_FILE" ]; then
+  echo "[STEP 5b] Assigning ticket_link from pre-fetched Jira sprint issues..."
+  python3 "$SCRIPT_DIR/scripts/assign_ticket_links.py" \
+    "$REPORT_FILE" \
+    --jira-issues "$JIRA_ISSUES_FILE" \
+    --in-place || {
+    echo "[ERROR] Failed to assign ticket_link values"
+    exit 1
+  }
+  python3 "$SCRIPT_DIR/scripts/print_jira_issues.py" "$JIRA_ISSUES_FILE"
+
   python3 "$SCRIPT_DIR/scripts/store_report.py" "$REPORT_FILE" || {
     echo "[WARN] Failed to store report in database (non-fatal)"
   }

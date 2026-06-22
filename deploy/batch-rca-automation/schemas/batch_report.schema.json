@@ -18,7 +18,8 @@
     "job_summaries",
     "failed_analyses",
     "cross_job_patterns",
-    "historical_correlations"
+    "historical_correlations",
+    "jira_sprint_tickets"
   ],
   "properties": {
     "batch_id": {
@@ -231,7 +232,8 @@
               "cluster",
               "job_duration_seconds",
               "analysis_duration_ms",
-              "analysis_path"
+              "analysis_path",
+              "ticket_link"
             ],
             "properties": {
               "job_id": {"type": "string"},
@@ -279,6 +281,11 @@
               "analysis_path": {
                 "type": "string",
                 "pattern": "^\\.analysis/[0-9]+/step5_analysis_summary\\.json$"
+              },
+              "ticket_link": {
+                "type": "string",
+                "format": "uri",
+                "description": "Exact URL to the best-matching Jira ticket from jira_sprint_tickets"
               }
             }
           },
@@ -290,7 +297,8 @@
               "status",
               "root_cause_summary",
               "analysis_duration_ms",
-              "analysis_path"
+              "analysis_path",
+              "ticket_link"
             ],
             "properties": {
               "job_id": {"type": "string"},
@@ -307,6 +315,11 @@
               "analysis_path": {
                 "type": "string",
                 "pattern": "^\\.analysis/[0-9]+/step5_analysis_summary\\.json$"
+              },
+              "ticket_link": {
+                "type": "string",
+                "format": "uri",
+                "description": "Exact URL to the best-matching Jira ticket from jira_sprint_tickets"
               }
             }
           }
@@ -408,6 +421,45 @@
               "secrets",
               "unknown"
             ]
+          }
+        }
+      }
+    },
+    "jira_sprint_tickets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sprints", "issues"],
+      "description": "All Jira issues fetched from active sprints on the GPTEINFRA board before analysis",
+      "properties": {
+        "sprints": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "name"],
+            "properties": {
+              "id": {"type": "integer"},
+              "name": {"type": "string", "minLength": 1}
+            }
+          }
+        },
+        "issues": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["key", "summary", "status", "ticket_url"],
+            "properties": {
+              "key": {"type": "string", "minLength": 1},
+              "summary": {"type": "string"},
+              "status": {"type": "string"},
+              "sprint_name": {"type": "string"},
+              "ticket_url": {
+                "type": "string",
+                "format": "uri"
+              }
+            }
           }
         }
       }
