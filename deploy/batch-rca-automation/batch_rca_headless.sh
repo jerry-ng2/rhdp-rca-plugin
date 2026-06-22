@@ -20,18 +20,33 @@ set -euo pipefail
 #
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 REPORT_DIR="$SCRIPT_DIR/reports"
 SCHEMA_FILE="$SCRIPT_DIR/schemas/batch_report.schema.json"
 TIMESTAMP=$(date -u +%Y%m%d_%H%M%S)
 BATCH_ID="batch_${TIMESTAMP}"
 
 # Load environment variables from Claude settings.json
-SETTINGS_FILE="$SCRIPT_DIR/.claude/settings.json"
-if [ ! -f "$SETTINGS_FILE" ]; then
-  echo "[ERROR] Claude settings.json not found at: $SETTINGS_FILE"
-  echo "[ERROR] Please ensure .claude/settings.json exists with env variables configured"
+# Prefer local override (e.g. OpenShift workspace), then repo-root settings
+SETTINGS_FILE=""
+for candidate in \
+  "$SCRIPT_DIR/.claude/settings.json" \
+  "$REPO_ROOT/.claude/settings.json" \
+  "$REPO_ROOT/.claude/settings.local.json"; do
+  if [ -f "$candidate" ]; then
+    SETTINGS_FILE="$candidate"
+    break
+  fi
+done
+if [ -z "$SETTINGS_FILE" ]; then
+  echo "[ERROR] Claude settings.json not found. Checked:"
+  echo "[ERROR]   $SCRIPT_DIR/.claude/settings.json"
+  echo "[ERROR]   $REPO_ROOT/.claude/settings.json"
+  echo "[ERROR]   $REPO_ROOT/.claude/settings.local.json"
+  echo "[ERROR] Please ensure one of these exists with env variables configured"
   exit 1
 fi
+echo "[INFO] Using Claude settings: $SETTINGS_FILE"
 
 # Extract env vars from JSON using python
 eval "$(python3 -c "
@@ -229,7 +244,7 @@ mkdir -p "$REPORT_DIR"
 # Using --dangerously-skip-permissions for testing only
 # Run from repo root to pick up .claude/settings.json (MLflow hooks, env vars)
 
-cd "$SCRIPT_DIR" || exit 1
+cd "$REPO_ROOT" || exit 1
 
 claude -p --dangerously-skip-permissions "$CLAUDE_PROMPT" || {
   echo "[ERROR] Claude execution failed"
