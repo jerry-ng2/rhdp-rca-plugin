@@ -10,47 +10,8 @@ import sqlite3
 import sys
 from typing import Any
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS job_results (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    batch_id TEXT NOT NULL,
-    job_id TEXT NOT NULL,
-    status TEXT,
-    root_cause_category TEXT,
-    root_cause_summary TEXT,
-    confidence TEXT,
-    cluster TEXT,
-    catalog_item TEXT,
-    guid TEXT,
-    job_duration_seconds REAL,
-    cross_job_pattern TEXT,
-    cross_job_pattern_description TEXT,
-    ticket_link TEXT,
-    is_open INTEGER,
-    UNIQUE(batch_id, job_id)
-);
-"""
-
-
-MIGRATIONS = [
-    "ALTER TABLE job_results ADD COLUMN cross_job_pattern TEXT",
-    "ALTER TABLE job_results ADD COLUMN cross_job_pattern_description TEXT",
-    "ALTER TABLE job_results ADD COLUMN ticket_link TEXT",
-    "ALTER TABLE job_results ADD COLUMN is_open INTEGER",
-    "UPDATE job_results SET is_open = 1 WHERE is_open IS NULL",
-]
-
-
-def init_db(db_path: str) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.executescript(SCHEMA)
-    for stmt in MIGRATIONS:
-        try:
-            conn.execute(stmt)
-        except sqlite3.OperationalError:
-            pass  # column already exists
-    return conn
+def open_db(db_path: str) -> sqlite3.Connection:
+    return sqlite3.connect(db_path, timeout=10)
 
 
 def store_report(conn: sqlite3.Connection, report: dict[str, Any], filename: str | None = None) -> bool:
@@ -62,25 +23,42 @@ def store_report(conn: sqlite3.Connection, report: dict[str, Any], filename: str
         print("[ERROR] Cannot determine batch_id", file=sys.stderr)
         return False
 
-    # Build a lookup from job_id -> pattern info for cross_job_patterns
-    pattern_by_job: dict[str, dict[str, str | None]] = {}
+    # Build per-job correlation info from both intra-batch cross_job_patterns
+    # and historical_correlations
+    correlated_jobs: dict[str, set[str]] = {}
+    descriptions: dict[str, list[str]] = {}
+
     for p in report.get("cross_job_patterns", []):
-        for jid in p.get("jobs", []):
-            pattern_by_job[str(jid)] = {
-                "pattern": p.get("pattern"),
-                "description": p.get("description"),
-            }
+        pattern_jobs = [str(j) for j in p.get("jobs", [])]
+        desc = p.get("description", "")
+        for jid in pattern_jobs:
+            correlated_jobs.setdefault(jid, set()).update(
+                j for j in pattern_jobs if j != jid
+            )
+            descriptions.setdefault(jid, []).append(desc)
+
+    for h in report.get("historical_correlations", []):
+        current_ids = [str(j) for j in h.get("current_job_ids", [])]
+        historical_ids = [str(j) for j in h.get("historical_job_ids", [])]
+        desc = h.get("description", "")
+        for jid in current_ids:
+            correlated_jobs.setdefault(jid, set()).update(
+                j for j in current_ids if j != jid
+            )
+            correlated_jobs[jid].update(historical_ids)
+            descriptions.setdefault(jid, []).append(desc)
 
     jobs = report.get("job_results") or report.get("job_summaries") or report.get("jobs", [])
     for job in jobs:
         jid = str(job.get("job_id", ""))
-        pinfo = pattern_by_job.get(jid, {})
+        related = sorted(correlated_jobs.get(jid, set()))
+        descs = descriptions.get(jid, [])
         conn.execute(
             """INSERT OR IGNORE INTO job_results
                (batch_id, job_id, status, root_cause_category, root_cause_summary,
                 confidence, cluster, catalog_item, guid, job_duration_seconds,
-                cross_job_pattern, cross_job_pattern_description, is_open)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                cross_job_pattern, cross_job_pattern_description)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 batch_id,
                 jid,
@@ -92,9 +70,8 @@ def store_report(conn: sqlite3.Connection, report: dict[str, Any], filename: str
                 job.get("catalog_item"),
                 job.get("guid"),
                 job.get("job_duration_seconds"),
-                pinfo.get("pattern"),
-                pinfo.get("description"),
-                1,
+                ",".join(related) if related else None,
+                " | ".join(descs) if descs else None,
             ),
         )
 
@@ -126,7 +103,7 @@ def main(argv: list[str] | None = None) -> int:
         db_path = os.path.join(script_dir, "..", "reports", "batch_rca.db")
 
     os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
-    conn = init_db(db_path)
+    conn = open_db(db_path)
 
     files: list[str] = []
     if args.backfill:

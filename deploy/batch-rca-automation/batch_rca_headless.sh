@@ -110,6 +110,14 @@ JOBS_LIST=$(echo "$JOB_IDS" | tr '\n' ' ' | sed 's/ $//')
 echo "[INFO] Found $JOB_COUNT job(s) to analyze: $JOBS_LIST"
 
 #############################################
+# Step 1b: Query historical open issues
+#############################################
+echo "[STEP 1b] Querying historical open issues..."
+OPEN_ISSUES=$(python3 "$SCRIPT_DIR/scripts/query_open_issues.py" --limit 30 2>/dev/null || echo "[]")
+OPEN_COUNT=$(echo "$OPEN_ISSUES" | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo "0")
+echo "[INFO] Found $OPEN_COUNT historical open issue group(s)"
+
+#############################################
 # Step 2: Build Dynamic Claude Prompt
 #############################################
 echo "[STEP 2] Building Claude prompt for parallel RCA..."
@@ -126,6 +134,15 @@ You are running in headless mode to analyze failed jobs in parallel.
 **Job IDs to analyze:** $JOBS_LIST
 **Batch ID:** $BATCH_ID
 **Jobs requested:** $JOB_COUNT
+
+**Historical Issues (from previous batches):**
+The following root cause patterns have been seen in prior batch analyses.
+After analyzing the current batch, compare results against these historical patterns.
+Only correlate a current failure with a historical pattern when their root_cause_category values
+match. Then check for additional overlap (same catalog_item, same cluster, or similar
+root_cause_summary). Include matches in the historical_correlations array in the batch report.
+
+$OPEN_ISSUES
 
 **Instructions:**
 
@@ -148,7 +165,8 @@ You are running in headless mode to analyze failed jobs in parallel.
      .claude/skills/root-cause-analysis/.analysis/{job_id}/step5_analysis_summary.json
    - Also read step1_job_context.json from the same .analysis/{job_id}/ directory for guid,
      catalog_item, cluster/platform, and job_duration_seconds
-   - Detect cross-job patterns (same root cause, same failing file, same missing resource)
+   - Detect cross-job patterns: first group jobs by root_cause_category, then within each
+     group look for shared signals (same failing file, same missing resource, similar summary)
    - Build the batch report JSON that conforms EXACTLY to the schema at:
      $SCHEMA_FILE
    - Read the schema file before writing the report; every required field must be present
@@ -160,7 +178,13 @@ You are running in headless mode to analyze failed jobs in parallel.
      * confidence_breakdown: tally high/medium/low from each job's root_cause.confidence
      * high_priority_recommendations: top 5 across all jobs, ranked 1-5, deduplicated where possible
      * failed_analyses: one entry per failed job (empty array when none failed)
-     * cross_job_patterns: shared patterns across 2+ jobs (empty array when none)
+     * cross_job_patterns: shared patterns across 2+ jobs in this batch that share the same
+       root_cause_category and have additional overlap (empty array when none)
+     * historical_correlations: matches between current batch failures and the historical
+       issues listed above. First filter by matching root_cause_category, then confirm with
+       catalog_item, cluster, or root_cause_summary similarity. Each entry needs
+       current_job_ids, historical_job_ids, pattern, description, and root_cause_category.
+       Empty array when no matches found.
      * analysis_path for each job: ".analysis/{job_id}/step5_analysis_summary.json"
 
 4. **Save report** - Write ONLY valid JSON (no markdown, no comments) to:
