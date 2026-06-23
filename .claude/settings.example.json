@@ -12,6 +12,8 @@
     "SPLUNK_OCP_INFRA_INDEX": "<splunk-ocp-infra-index>",
     "SPLUNK_VERIFY_SSL": "false",
     "GITHUB_TOKEN": "<your-github-token>",
+    "JIRA_EMAIL": "<your-atlassian-email>",
+    "JIRA_API_TOKEN": "<your-jira-api-token>",
     "MLFLOW_EXPERIMENT_NAME": "rhdp-rca-plugin-traces",
     "MLFLOW_CLAUDE_TRACING_ENABLED": "true",
     "MLFLOW_TRACKING_URI": "<mlflow-tracking-uri>",

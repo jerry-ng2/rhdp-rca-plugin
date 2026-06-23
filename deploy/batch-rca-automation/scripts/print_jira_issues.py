@@ -25,10 +25,10 @@ def main(argv: list[str] | None = None) -> int:
         print("[JIRA] Active sprint(s): none")
 
     if not issues:
-        print("[JIRA] Sprint issues: (none)")
+        print("[JIRA] Board issues: (none)")
         return 0
 
-    print(f"[JIRA] Sprint issues ({len(issues)} total):")
+    print(f"[JIRA] Board issues ({len(issues)} total):")
     for issue in issues:
         key = issue.get("key", "?")
         status = issue.get("status", "?")

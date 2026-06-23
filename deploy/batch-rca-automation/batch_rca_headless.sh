@@ -138,48 +138,32 @@ OPEN_COUNT=$(echo "$OPEN_ISSUES" | python3 -c "import sys,json; print(len(json.l
 echo "[INFO] Found $OPEN_COUNT historical open issue group(s)"
 
 #############################################
-# Step 1c: Fetch Jira sprint issues via MCP (before RCA)
+# Step 1c: Fetch Jira board issues via API (before RCA)
 #############################################
 JIRA_ISSUES_FILE="$REPORT_DIR/.jira_sprint_${TIMESTAMP}.json"
-echo "[STEP 1c] Fetching Jira sprint issues via Atlassian MCP..."
+echo "[STEP 1c] Fetching Jira board issues via Jira API..."
 
-JIRA_FETCH_PROMPT="You MUST use Atlassian Jira MCP tools only. Do NOT spawn agents, invoke skills, or run RCA.
-
-Steps (complete ALL before responding):
-1. Call mcp__atlassian__jira_get_sprints_from_board with board_id=\"${JIRA_BOARD_ID}\" and state=\"active\"
-2. For EACH active sprint returned, call mcp__atlassian__jira_get_sprint_issues with that sprint_id and limit=100
-3. Respond with ONLY a single JSON object (no markdown fences, no commentary) in this exact shape:
-{\"sprints\":[{\"id\":<number>,\"name\":<string>}],\"issues\":[{\"key\":<string>,\"summary\":<string>,\"status\":<string>,\"sprint_name\":<string>,\"ticket_url\":<string>,\"is_open\":<boolean>}]}
-For each issue, ticket_url MUST be ${JIRA_BASE_URL}/browse/{key} and is_open MUST be true unless status is Done, Closed, Resolved, or Cancelled.
-Include ALL issues from active sprints regardless of status."
-
-cd "$REPO_ROOT" || exit 1
-if claude -p --dangerously-skip-permissions "$JIRA_FETCH_PROMPT" > "${JIRA_ISSUES_FILE}.raw" 2>&1; then
-  if python3 "$SCRIPT_DIR/scripts/extract_json_object.py" "${JIRA_ISSUES_FILE}.raw" > "${JIRA_ISSUES_FILE}.parsed" 2>/dev/null; then
-    python3 "$SCRIPT_DIR/scripts/normalize_jira_sprint_issues.py" \
-      "${JIRA_ISSUES_FILE}.parsed" \
-      --base-url "$JIRA_BASE_URL" \
-      --output "$JIRA_ISSUES_FILE"
-    echo "[INFO] Parsed Jira sprint issues from MCP response"
-  else
-    echo "[WARN] Failed to parse Jira JSON from MCP response; using empty issue list"
-    echo '{"sprints":[],"issues":[]}' > "$JIRA_ISSUES_FILE"
-  fi
+if python3 "$SCRIPT_DIR/scripts/fetch_jira_issues.py" \
+  --board-id "$JIRA_BOARD_ID" \
+  --project-key "$JIRA_PROJECT_KEY" \
+  --base-url "$JIRA_BASE_URL" \
+  --output "$JIRA_ISSUES_FILE"; then
+  echo "[INFO] Fetched Jira board issues from Jira API"
 else
-  echo "[WARN] Jira MCP fetch call failed; using empty issue list"
+  echo "[WARN] Jira API fetch failed; using empty issue list"
   echo '{"sprints":[],"issues":[]}' > "$JIRA_ISSUES_FILE"
 fi
 
 JIRA_ISSUE_COUNT=$(python3 -c "import json; print(len(json.load(open('$JIRA_ISSUES_FILE')).get('issues',[])))")
-echo "[INFO] Found $JIRA_ISSUE_COUNT Jira issue(s) in active sprint(s)"
+echo "[INFO] Found $JIRA_ISSUE_COUNT open Jira issue(s) on board $JIRA_BOARD_ID"
 python3 "$SCRIPT_DIR/scripts/print_jira_issues.py" "$JIRA_ISSUES_FILE"
 
 if [ "$JIRA_ISSUE_COUNT" -eq 0 ]; then
-  echo "[ERROR] No Jira sprint issues fetched — cannot assign ticket_link. Check Atlassian MCP auth."
+  echo "[ERROR] No Jira board issues fetched — cannot assign ticket_link. Check JIRA_EMAIL and JIRA_API_TOKEN in settings.json."
   exit 1
 fi
 
-JIRA_SPRINT_ISSUES=$(cat "$JIRA_ISSUES_FILE")
+JIRA_PLACEHOLDER_URL="${JIRA_BASE_URL}/browse/PENDING"
 
 #############################################
 # Step 2: Build Dynamic Claude Prompt
@@ -191,8 +175,10 @@ if [ ! -f "$SCHEMA_FILE" ]; then
   exit 1
 fi
 
-# Build the orchestration prompt
-read -r -d '' CLAUDE_PROMPT <<EOF || true
+# Write prompt to a file and pass via stdin. Embedding the full Jira issue list
+# on the command line exceeds ARG_MAX once all non-closed board issues are fetched.
+PROMPT_FILE="$REPORT_DIR/.batch_prompt_${TIMESTAMP}.txt"
+cat > "$PROMPT_FILE" <<EOF
 You are running in headless mode to analyze failed jobs in parallel.
 
 **Job IDs to analyze:** $JOBS_LIST
@@ -208,12 +194,18 @@ root_cause_summary). Include matches in the historical_correlations array in the
 
 $OPEN_ISSUES
 
-**Jira Sprint Tickets (pre-fetched via MCP — use ONLY this list for ticket_link):**
-The following issues were fetched from active sprints on board $JIRA_BOARD_ID before this run.
-Copy this list verbatim into the batch report field jira_sprint_tickets.
-Do NOT re-fetch Jira during aggregation.
+**Jira tickets (pre-fetched — do NOT load the full list into this prompt):**
+Non-closed issues from board $JIRA_BOARD_ID are stored at:
+$JIRA_ISSUES_FILE
 
-$JIRA_SPRINT_ISSUES
+Post-processing after your report is written runs assign_ticket_links.py to set
+jira_sprint_tickets and ticket_link on every job_summaries entry from that file.
+Do NOT read, match, or paste the full Jira issue list during aggregation.
+
+For schema compliance only, use these placeholders (they will be replaced in post-processing):
+- jira_sprint_tickets: {"sprints":[],"issues":[{"key":"PENDING","summary":"","status":"New","ticket_url":"$JIRA_PLACEHOLDER_URL","is_open":true}]}
+- ticket_link on every job_summaries entry: "$JIRA_PLACEHOLDER_URL"
+- is_open on every job_summaries entry: true
 
 **Instructions:**
 
@@ -238,16 +230,7 @@ $JIRA_SPRINT_ISSUES
      catalog_item, cluster/platform, and job_duration_seconds
    - Detect cross-job patterns: first group jobs by root_cause_category, then within each
      group look for shared signals (same failing file, same missing resource, similar summary)
-   - For each job in job_summaries, compare the RCA output (root_cause_summary,
-     root_cause_category, catalog_item, cluster, platform, failing_role, failing_github_path)
-     against jira_sprint_tickets.issues above. Pick the single best-matching issue from that
-     list only (never invent a ticket key). Multiple jobs with the same failure pattern MAY
-     share the same ticket_link.
-     Set ticket_link to the matching issue's ticket_url and is_open to the matching issue's
-     is_open (boolean, default true when status is not Done/Closed/Resolved/Cancelled).
-     ticket_link is REQUIRED on every job_summaries entry and MUST be a URL string — ALWAYS
-     pick the best available issue from jira_sprint_tickets.issues; null is NOT allowed.
-   - Include jira_sprint_tickets in the report (copy the pre-fetched JSON above verbatim)
+   - Use the Jira placeholder values above for jira_sprint_tickets, ticket_link, and is_open
    - Build the batch report JSON that conforms EXACTLY to the schema at:
      $SCHEMA_FILE
    - Read the schema file before writing the report; every required field must be present
@@ -274,12 +257,13 @@ $JIRA_SPRINT_ISSUES
 5. **Output completion summary** - Print to stdout:
    - Number of jobs analyzed successfully
    - Number of failures (if any)
-   - All Jira sprint tickets (key, status, summary, ticket_url) from jira_sprint_tickets.issues
-   - ticket_link assigned for every job_summaries entry
    - Report location
+   - Note that Jira ticket_link values are assigned in post-processing
 
 **Note:** The root-cause-analysis skill handles Steps 1-5 automatically, including Claude's analysis in Step 5.
 EOF
+
+echo "[INFO] Prompt written to $PROMPT_FILE ($(wc -c < "$PROMPT_FILE" | tr -d ' ') bytes)"
 
 #############################################
 # Step 3: Setup MLflow
@@ -314,7 +298,7 @@ mkdir -p "$REPORT_DIR"
 
 cd "$REPO_ROOT" || exit 1
 
-claude -p --dangerously-skip-permissions "$CLAUDE_PROMPT" || {
+claude -p --dangerously-skip-permissions < "$PROMPT_FILE" || {
   echo "[ERROR] Claude execution failed"
   exit 1
 }
