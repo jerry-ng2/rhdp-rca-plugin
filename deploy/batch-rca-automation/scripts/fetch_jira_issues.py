@@ -55,8 +55,13 @@ def build_status_jql() -> str:
     return f"status NOT IN ({closed})"
 
 
+def build_open_sprint_jql() -> str:
+    """Issues in active (open) sprints only — excludes backlog and closed sprints."""
+    return f"sprint in openSprints() AND {build_status_jql()}"
+
+
 def build_project_jql(project_key: str) -> str:
-    return f"project = {project_key} AND {build_status_jql()} ORDER BY updated DESC"
+    return f"project = {project_key} AND {build_open_sprint_jql()} ORDER BY updated DESC"
 
 
 def fetch_active_sprints(base_url: str, board_id: str, email: str, api_token: str) -> list[dict[str, Any]]:
@@ -76,8 +81,8 @@ def fetch_board_issues_agile(
     email: str,
     api_token: str,
 ) -> list[dict[str, Any]]:
-    """Fetch board-scoped issues; JQL is AND-combined with the board filter."""
-    jql = build_status_jql()
+    """Fetch issues in active sprints on the board; JQL is AND-combined with the board filter."""
+    jql = build_open_sprint_jql()
     issues: list[dict[str, Any]] = []
     start_at = 0
 
@@ -149,7 +154,7 @@ def fetch_board_issues(
     issues = fetch_board_issues_agile(base_url, board_id, email, api_token)
     if issues:
         print(
-            f"Fetched {len(issues)} issue(s) from agile board API with JQL: {build_status_jql()}",
+            f"Fetched {len(issues)} issue(s) from agile board API with JQL: {build_open_sprint_jql()}",
             file=sys.stderr,
         )
         return issues

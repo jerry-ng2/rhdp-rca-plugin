@@ -441,7 +441,7 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["sprints", "issues"],
-      "description": "Non-closed Jira issues fetched from the GPTEINFRA board via Jira API and JQL before analysis",
+      "description": "Non-closed Jira issues in active sprints on the GPTEINFRA board, fetched via Jira API and JQL before analysis",
       "properties": {
         "sprints": {
           "type": "array",
