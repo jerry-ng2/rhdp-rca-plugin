@@ -9,8 +9,7 @@ set -euo pipefail
 # 1. Queries source PostgreSQL table for unanalyzed job IDs (ai_proccessed = FALSE)
 # 2. Invokes Claude in headless mode to run parallel RCA on those jobs
 #
-# Requires SOURCE_DB_* env vars (HOST, PORT, NAME, USER, PASSWORD, TABLE)
-# set in .claude/settings.json under "env".
+# Requires SOURCE_DB_* and JIRA_* env vars set in .claude/settings.json under "env".
 #
 # Usage:
 #   ./batch_rca_headless.sh [--since 'YYYY-MM-DD HH:MM:SS'] [--limit N]
@@ -22,13 +21,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 REPORT_DIR="$SCRIPT_DIR/reports"
+mkdir -p "$REPORT_DIR"
 SCHEMA_FILE="$SCRIPT_DIR/schemas/batch_report.schema.json"
 TIMESTAMP=$(date -u +%Y%m%d_%H%M%S)
 BATCH_ID="batch_${TIMESTAMP}"
-JIRA_BOARD_URL="https://redhat.atlassian.net/jira/software/c/projects/GPTEINFRA/boards/1290"
-JIRA_BOARD_ID="1290"
-JIRA_PROJECT_KEY="GPTEINFRA"
-JIRA_BASE_URL="https://redhat.atlassian.net"
 
 # Load environment variables from Claude settings.json
 # Prefer local override (e.g. OpenShift workspace), then repo-root settings
@@ -66,6 +62,13 @@ except Exception as e:
 ")"
 
 echo "[INFO] Environment variables loaded from settings.json"
+
+for var in JIRA_BOARD_URL JIRA_BOARD_ID JIRA_PROJECT_KEY JIRA_BASE_URL; do
+  if [ -z "${!var:-}" ]; then
+    echo "[ERROR] $var is not set in settings.json (env section)"
+    exit 1
+  fi
+done
 
 # Default: look back 30 minutes (matches the cron interval)
 SINCE=""
@@ -288,8 +291,6 @@ fi
 # Step 4: Execute Claude Headless
 #############################################
 echo "[STEP 4] Executing Claude in headless mode..."
-
-mkdir -p "$REPORT_DIR"
 
 # Run claude in non-interactive mode with permissions bypass for testing
 # Note: -p/--print flag for non-interactive output
