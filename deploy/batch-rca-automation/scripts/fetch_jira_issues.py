@@ -6,17 +6,33 @@ import argparse
 import base64
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any
+from urllib.parse import urlparse
 
 from normalize_jira_sprint_issues import normalize_data
 
 CLOSED_STATUSES = ("Closed", "Done", "Resolved", "Cancelled")
 ISSUE_FIELDS = ("summary", "status", "description")
 PAGE_SIZE = 100
+
+
+def parse_board_url(board_url: str) -> tuple[str, str, str]:
+    """Return (base_url, project_key, board_id) from a Jira board URL."""
+    parsed = urlparse(board_url.strip())
+    if not parsed.scheme or not parsed.netloc:
+        raise ValueError(f"Invalid Jira board URL: {board_url}")
+    base_url = f"{parsed.scheme}://{parsed.netloc}"
+    match = re.search(r"/projects/([^/]+)/boards/(\d+)", parsed.path)
+    if not match:
+        raise ValueError(
+            f"Cannot parse project key and board ID from Jira board URL: {board_url}"
+        )
+    return base_url, match.group(1), match.group(2)
 
 
 def _auth_header(email: str, api_token: str) -> str:
@@ -184,11 +200,15 @@ def fetch_jira_data(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Fetch Jira board issues via REST API and JQL")
-    parser.add_argument("--board-id", required=True, help="Jira board ID")
-    parser.add_argument("--project-key", default="GPTEINFRA", help="Jira project key for search/jql fallback")
-    parser.add_argument("--base-url", default="https://redhat.atlassian.net")
+    parser.add_argument("--board-url", required=True, help="Jira board URL")
     parser.add_argument("--output", "-o", required=True, help="Output JSON path")
     args = parser.parse_args(argv)
+
+    try:
+        base_url, project_key, board_id = parse_board_url(args.board_url)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
 
     email = os.environ.get("JIRA_EMAIL", "").strip()
     api_token = os.environ.get("JIRA_API_TOKEN", "").strip()
@@ -201,7 +221,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     try:
-        data = fetch_jira_data(args.base_url, args.board_id, args.project_key, email, api_token)
+        data = fetch_jira_data(base_url, board_id, project_key, email, api_token)
     except RuntimeError as exc:
         print(str(exc), file=sys.stderr)
         return 1

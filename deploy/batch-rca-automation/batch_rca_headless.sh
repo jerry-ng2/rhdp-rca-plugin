@@ -63,7 +63,7 @@ except Exception as e:
 
 echo "[INFO] Environment variables loaded from settings.json"
 
-for var in JIRA_BOARD_URL JIRA_BOARD_ID JIRA_PROJECT_KEY JIRA_BASE_URL; do
+for var in JIRA_BOARD_URL; do
   if [ -z "${!var:-}" ]; then
     echo "[ERROR] $var is not set in settings.json (env section)"
     exit 1
@@ -147,9 +147,7 @@ JIRA_ISSUES_FILE="$REPORT_DIR/.jira_sprint_${TIMESTAMP}.json"
 echo "[STEP 1c] Fetching Jira board issues via Jira API..."
 
 if python3 "$SCRIPT_DIR/scripts/fetch_jira_issues.py" \
-  --board-id "$JIRA_BOARD_ID" \
-  --project-key "$JIRA_PROJECT_KEY" \
-  --base-url "$JIRA_BASE_URL" \
+  --board-url "$JIRA_BOARD_URL" \
   --output "$JIRA_ISSUES_FILE"; then
   echo "[INFO] Fetched Jira board issues from Jira API"
 else
@@ -158,7 +156,7 @@ else
 fi
 
 JIRA_ISSUE_COUNT=$(python3 -c "import json; print(len(json.load(open('$JIRA_ISSUES_FILE')).get('issues',[])))")
-echo "[INFO] Found $JIRA_ISSUE_COUNT open Jira issue(s) on board $JIRA_BOARD_ID"
+echo "[INFO] Found $JIRA_ISSUE_COUNT open Jira issue(s) on board $JIRA_BOARD_URL"
 python3 "$SCRIPT_DIR/scripts/print_jira_issues.py" "$JIRA_ISSUES_FILE"
 
 if [ "$JIRA_ISSUE_COUNT" -eq 0 ]; then
@@ -166,7 +164,11 @@ if [ "$JIRA_ISSUE_COUNT" -eq 0 ]; then
   exit 1
 fi
 
-JIRA_PLACEHOLDER_URL="${JIRA_BASE_URL}/browse/PENDING"
+JIRA_PLACEHOLDER_URL="$(python3 -c "
+from urllib.parse import urlparse
+u = urlparse('${JIRA_BOARD_URL}')
+print(f'{u.scheme}://{u.netloc}/browse/PENDING')
+")"
 
 #############################################
 # Step 2: Build Dynamic Claude Prompt
@@ -198,7 +200,7 @@ root_cause_summary). Include matches in the historical_correlations array in the
 $OPEN_ISSUES
 
 **Jira tickets (pre-fetched — do NOT load the full list into this prompt):**
-Non-closed issues from board $JIRA_BOARD_ID are stored at:
+Non-closed issues from board $JIRA_BOARD_URL are stored at:
 $JIRA_ISSUES_FILE
 
 Post-processing after your report is written runs assign_ticket_links.py to set
