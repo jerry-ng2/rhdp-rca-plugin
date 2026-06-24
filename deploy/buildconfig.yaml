@@ -1,0 +1,27 @@
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: rhdp-rca-plugin
+  namespace: claude-ci-test
+  labels:
+    app: rhdp-rca-plugin
+spec:
+  source:
+    type: Git
+    git:
+      uri: https://github.com/redhat-et/rhdp-rca-plugin.git
+      ref: main
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: deploy/Dockerfile
+  output:
+    to:
+      kind: ImageStreamTag
+      name: rhdp-rca-plugin:latest
+  triggers:
+    - type: ConfigChange
+    - type: GitHub
+      github:
+        secretReference:
+          name: rhdp-rca-plugin-webhook-secret
