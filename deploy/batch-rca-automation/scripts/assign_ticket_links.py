@@ -1,4 +1,4 @@
-"""Assign ticket_link on every job summary using pre-fetched Jira sprint issues."""
+"""Assign ticket_link on job summaries using pre-fetched Jira sprint issues."""
 
 from __future__ import annotations
 
@@ -8,9 +8,20 @@ import re
 import sys
 from typing import Any
 
+DEFAULT_MIN_SCORE = 15
+
+_STOPWORDS = frozenset({
+    "for", "the", "and", "with", "from", "that", "this", "when", "not",
+    "are", "was", "has", "have", "new", "progress",
+})
+
 
 def _tokens(text: str) -> set[str]:
-    return {t for t in re.findall(r"[a-z0-9][a-z0-9_-]{2,}", text.lower())}
+    return {
+        t
+        for t in re.findall(r"[a-z0-9][a-z0-9_-]{2,}", text.lower())
+        if t not in _STOPWORDS
+    }
 
 
 def _issue_text(issue: dict[str, Any]) -> str:
@@ -77,15 +88,22 @@ def score_match(job: dict[str, Any], issue: dict[str, Any]) -> int:
     return score
 
 
-def pick_issue(job: dict[str, Any], issues: list[dict[str, Any]]) -> dict[str, Any]:
+def pick_issue(
+    job: dict[str, Any], issues: list[dict[str, Any]]
+) -> tuple[dict[str, Any], int]:
     if not issues:
         raise ValueError("No Jira issues available for ticket matching")
 
     ranked = sorted(issues, key=lambda issue: score_match(job, issue), reverse=True)
-    return ranked[0]
+    best = ranked[0]
+    return best, score_match(job, best)
 
 
-def assign_links(report: dict[str, Any], jira_data: dict[str, Any]) -> dict[str, Any]:
+def assign_links(
+    report: dict[str, Any],
+    jira_data: dict[str, Any],
+    min_score: int = DEFAULT_MIN_SCORE,
+) -> dict[str, Any]:
     issues = jira_data.get("issues", [])
     if not issues:
         raise ValueError("Jira issue list is empty; cannot assign ticket_link")
@@ -93,9 +111,14 @@ def assign_links(report: dict[str, Any], jira_data: dict[str, Any]) -> dict[str,
     report["jira_sprint_tickets"] = jira_data
 
     for job in report.get("job_summaries", []):
-        best = pick_issue(job, issues)
-        job["ticket_link"] = best["ticket_url"]
-        job["is_open"] = best.get("is_open", True)
+        best, score = pick_issue(job, issues)
+        job["ticket_match_score"] = score
+        if score >= min_score:
+            job["ticket_link"] = best["ticket_url"]
+            job["is_open"] = best.get("is_open", True)
+        else:
+            job["ticket_link"] = None
+            job["is_open"] = None
 
     return report
 
@@ -105,6 +128,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("report", help="Path to batch report JSON")
     parser.add_argument("--jira-issues", required=True, help="Path to jira sprint issues JSON")
     parser.add_argument("--in-place", action="store_true", help="Overwrite the report file")
+    parser.add_argument(
+        "--min-score",
+        type=int,
+        default=DEFAULT_MIN_SCORE,
+        help=f"Minimum match score to assign ticket_link (default: {DEFAULT_MIN_SCORE})",
+    )
     args = parser.parse_args(argv)
 
     with open(args.report) as f:
@@ -113,7 +142,7 @@ def main(argv: list[str] | None = None) -> int:
         jira_data = json.load(f)
 
     try:
-        report = assign_links(report, jira_data)
+        report = assign_links(report, jira_data, min_score=args.min_score)
     except ValueError as e:
         print(f"[ERROR] {e}", file=sys.stderr)
         return 1
@@ -123,8 +152,10 @@ def main(argv: list[str] | None = None) -> int:
         json.dump(report, f, indent=2)
         f.write("\n")
 
-    assigned = sum(1 for j in report.get("job_summaries", []) if j.get("ticket_link"))
-    print(f"[OK] Assigned ticket_link for {assigned} job(s)")
+    jobs = report.get("job_summaries", [])
+    assigned = sum(1 for j in jobs if j.get("ticket_link"))
+    below = len(jobs) - assigned
+    print(f"[OK] Assigned ticket_link for {assigned} job(s), {below} below min_score={args.min_score}")
     return 0
 
 

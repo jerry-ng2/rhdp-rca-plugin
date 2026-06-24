@@ -63,7 +63,7 @@ except Exception as e:
 
 echo "[INFO] Environment variables loaded from settings.json"
 
-for var in JIRA_BOARD_URL; do
+for var in JIRA_BOARD_URL JIRA_EMAIL JIRA_API_TOKEN; do
   if [ -z "${!var:-}" ]; then
     echo "[ERROR] $var is not set in settings.json (env section)"
     exit 1
@@ -146,8 +146,9 @@ echo "[INFO] Found $OPEN_COUNT historical open issue group(s)"
 JIRA_ISSUES_FILE="$REPORT_DIR/.jira_sprint_${TIMESTAMP}.json"
 echo "[STEP 1c] Fetching Jira board issues via Jira API..."
 
-if python3 "$SCRIPT_DIR/scripts/fetch_jira_issues.py" \
+if python3 "$SCRIPT_DIR/scripts/jira.py" \
   --board-url "$JIRA_BOARD_URL" \
+  --active-sprint \
   --output "$JIRA_ISSUES_FILE"; then
   echo "[INFO] Fetched Jira board issues from Jira API"
 else
@@ -169,6 +170,8 @@ from urllib.parse import urlparse
 u = urlparse('${JIRA_BOARD_URL}')
 print(f'{u.scheme}://{u.netloc}/browse/PENDING')
 ")"
+
+JIRA_MATCH_MIN_SCORE="${JIRA_MATCH_MIN_SCORE:-15}"
 
 #############################################
 # Step 2: Build Dynamic Claude Prompt
@@ -204,13 +207,14 @@ Non-closed issues from board $JIRA_BOARD_URL are stored at:
 $JIRA_ISSUES_FILE
 
 Post-processing after your report is written runs assign_ticket_links.py to set
-jira_sprint_tickets and ticket_link on every job_summaries entry from that file.
+jira_sprint_tickets and ticket_link on job_summaries entries when a confident match
+is found (min score $JIRA_MATCH_MIN_SCORE). Jobs without a strong match get null ticket_link.
 Do NOT read, match, or paste the full Jira issue list during aggregation.
 
 For schema compliance only, use these placeholders (they will be replaced in post-processing):
 - jira_sprint_tickets: {"sprints":[],"issues":[{"key":"PENDING","summary":"","status":"New","ticket_url":"$JIRA_PLACEHOLDER_URL","is_open":true}]}
-- ticket_link on every job_summaries entry: "$JIRA_PLACEHOLDER_URL"
-- is_open on every job_summaries entry: true
+- ticket_link on every job_summaries entry: "$JIRA_PLACEHOLDER_URL" (may become null if no confident match)
+- is_open on every job_summaries entry: true (may become null if no confident match)
 
 **Instructions:**
 
@@ -263,7 +267,7 @@ For schema compliance only, use these placeholders (they will be replaced in pos
    - Number of jobs analyzed successfully
    - Number of failures (if any)
    - Report location
-   - Note that Jira ticket_link values are assigned in post-processing
+   - Note that Jira ticket_link values are assigned in post-processing when match score >= $JIRA_MATCH_MIN_SCORE
 
 **Note:** The root-cause-analysis skill handles Steps 1-5 automatically, including Claude's analysis in Step 5.
 EOF
@@ -313,10 +317,11 @@ echo "[STEP 5] Storing report in local database..."
 
 REPORT_FILE="$REPORT_DIR/batch_${TIMESTAMP}.json"
 if [ -f "$REPORT_FILE" ]; then
-  echo "[STEP 5b] Assigning ticket_link from pre-fetched Jira sprint issues..."
+  echo "[STEP 5b] Assigning ticket_link from pre-fetched Jira sprint issues (min_score=$JIRA_MATCH_MIN_SCORE)..."
   python3 "$SCRIPT_DIR/scripts/assign_ticket_links.py" \
     "$REPORT_FILE" \
     --jira-issues "$JIRA_ISSUES_FILE" \
+    --min-score "$JIRA_MATCH_MIN_SCORE" \
     --in-place || {
     echo "[ERROR] Failed to assign ticket_link values"
     exit 1
