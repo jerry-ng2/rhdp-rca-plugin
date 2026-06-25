@@ -172,6 +172,8 @@ print(f'{u.scheme}://{u.netloc}/browse/PENDING')
 ")"
 
 JIRA_MATCH_MIN_SCORE="${JIRA_MATCH_MIN_SCORE:-15}"
+JIRA_SEMANTIC_MATCH_ENABLED="${JIRA_SEMANTIC_MATCH_ENABLED:-true}"
+JIRA_SEMANTIC_MIN_CONFIDENCE="${JIRA_SEMANTIC_MIN_CONFIDENCE:-medium}"
 
 #############################################
 # Step 2: Build Dynamic Claude Prompt
@@ -206,9 +208,10 @@ $OPEN_ISSUES
 Non-closed issues from board $JIRA_BOARD_URL are stored at:
 $JIRA_ISSUES_FILE
 
-Post-processing after your report is written runs assign_ticket_links.py to set
-jira_sprint_tickets and ticket_link on job_summaries entries when a confident match
-is found (min score $JIRA_MATCH_MIN_SCORE). Jobs without a strong match get null ticket_link.
+Post-processing after your report is written runs assign_ticket_links.py (rule-based)
+and semantic_match_tickets.py (Claude fallback) to set jira_sprint_tickets and ticket_link
+when a confident match is found (rule min score $JIRA_MATCH_MIN_SCORE, semantic min confidence
+$JIRA_SEMANTIC_MIN_CONFIDENCE). Jobs without a strong match get null ticket_link.
 Do NOT read, match, or paste the full Jira issue list during aggregation.
 
 For schema compliance only, use these placeholders (they will be replaced in post-processing):
@@ -267,7 +270,7 @@ For schema compliance only, use these placeholders (they will be replaced in pos
    - Number of jobs analyzed successfully
    - Number of failures (if any)
    - Report location
-   - Note that Jira ticket_link values are assigned in post-processing when match score >= $JIRA_MATCH_MIN_SCORE
+   - Note that Jira ticket_link values are assigned in post-processing (rule + semantic matching)
 
 **Note:** The root-cause-analysis skill handles Steps 1-5 automatically, including Claude's analysis in Step 5.
 EOF
@@ -316,16 +319,49 @@ claude -p --dangerously-skip-permissions < "$PROMPT_FILE" || {
 echo "[STEP 5] Storing report in local database..."
 
 REPORT_FILE="$REPORT_DIR/batch_${TIMESTAMP}.json"
+SEMANTIC_MATCHES_FILE="$REPORT_DIR/.semantic_matches_${TIMESTAMP}.json"
 if [ -f "$REPORT_FILE" ]; then
-  echo "[STEP 5b] Assigning ticket_link from pre-fetched Jira sprint issues (min_score=$JIRA_MATCH_MIN_SCORE)..."
-  python3 "$SCRIPT_DIR/scripts/assign_ticket_links.py" \
-    "$REPORT_FILE" \
-    --jira-issues "$JIRA_ISSUES_FILE" \
-    --min-score "$JIRA_MATCH_MIN_SCORE" \
-    --in-place || {
-    echo "[ERROR] Failed to assign ticket_link values"
-    exit 1
-  }
+  if [ "$JIRA_SEMANTIC_MATCH_ENABLED" = "true" ]; then
+    echo "[STEP 5b] Running semantic Jira ticket matching (fallback for rule score < $JIRA_MATCH_MIN_SCORE)..."
+    if python3 "$SCRIPT_DIR/scripts/semantic_match_tickets.py" \
+      "$REPORT_FILE" \
+      --jira-issues "$JIRA_ISSUES_FILE" \
+      --min-rule-score "$JIRA_MATCH_MIN_SCORE" \
+      --repo-root "$REPO_ROOT" \
+      --output "$SEMANTIC_MATCHES_FILE"; then
+      echo "[STEP 5c] Assigning ticket_link (rule + semantic merge, min_score=$JIRA_MATCH_MIN_SCORE)..."
+      python3 "$SCRIPT_DIR/scripts/assign_ticket_links.py" \
+        "$REPORT_FILE" \
+        --jira-issues "$JIRA_ISSUES_FILE" \
+        --semantic-matches "$SEMANTIC_MATCHES_FILE" \
+        --min-score "$JIRA_MATCH_MIN_SCORE" \
+        --semantic-min-confidence "$JIRA_SEMANTIC_MIN_CONFIDENCE" \
+        --in-place || {
+        echo "[ERROR] Failed to assign ticket_link values"
+        exit 1
+      }
+    else
+      echo "[WARN] Semantic matching failed; continuing with rule-based matching only"
+      python3 "$SCRIPT_DIR/scripts/assign_ticket_links.py" \
+        "$REPORT_FILE" \
+        --jira-issues "$JIRA_ISSUES_FILE" \
+        --min-score "$JIRA_MATCH_MIN_SCORE" \
+        --in-place || {
+        echo "[ERROR] Failed to assign ticket_link values"
+        exit 1
+      }
+    fi
+  else
+    echo "[STEP 5b] Assigning ticket_link from pre-fetched Jira sprint issues (min_score=$JIRA_MATCH_MIN_SCORE)..."
+    python3 "$SCRIPT_DIR/scripts/assign_ticket_links.py" \
+      "$REPORT_FILE" \
+      --jira-issues "$JIRA_ISSUES_FILE" \
+      --min-score "$JIRA_MATCH_MIN_SCORE" \
+      --in-place || {
+      echo "[ERROR] Failed to assign ticket_link values"
+      exit 1
+    }
+  fi
   python3 "$SCRIPT_DIR/scripts/print_jira_issues.py" "$JIRA_ISSUES_FILE"
 
   python3 "$SCRIPT_DIR/scripts/store_report.py" "$REPORT_FILE" || {

@@ -284,7 +284,7 @@
               "ticket_link": {
                 "type": ["string", "null"],
                 "format": "uri",
-                "description": "URL to the best-matching Jira ticket when ticket_match_score meets the post-processing threshold; null when no confident match"
+                "description": "URL to the best-matching Jira ticket from rule-based or semantic post-processing; null when no confident match"
               },
               "is_open": {
                 "type": ["boolean", "null"],
@@ -293,7 +293,21 @@
               "ticket_match_score": {
                 "type": "integer",
                 "minimum": 0,
-                "description": "Match score assigned by assign_ticket_links.py post-processing"
+                "description": "Rule-based match score from assign_ticket_links.py post-processing"
+              },
+              "ticket_match_method": {
+                "type": ["string", "null"],
+                "enum": ["rule", "semantic", null],
+                "description": "How ticket_link was assigned; null when unmatched"
+              },
+              "ticket_match_confidence": {
+                "type": ["string", "null"],
+                "enum": ["high", "medium", "low", null],
+                "description": "Claude confidence for semantic matches; null for rule matches"
+              },
+              "ticket_match_rationale": {
+                "type": ["string", "null"],
+                "description": "Claude rationale for semantic matches; null for rule matches"
               }
             }
           },
@@ -326,7 +340,7 @@
               "ticket_link": {
                 "type": ["string", "null"],
                 "format": "uri",
-                "description": "URL to the best-matching Jira ticket when ticket_match_score meets the post-processing threshold; null when no confident match"
+                "description": "URL to the best-matching Jira ticket from rule-based or semantic post-processing; null when no confident match"
               },
               "is_open": {
                 "type": ["boolean", "null"],
@@ -335,7 +349,21 @@
               "ticket_match_score": {
                 "type": "integer",
                 "minimum": 0,
-                "description": "Match score assigned by assign_ticket_links.py post-processing"
+                "description": "Rule-based match score from assign_ticket_links.py post-processing"
+              },
+              "ticket_match_method": {
+                "type": ["string", "null"],
+                "enum": ["rule", "semantic", null],
+                "description": "How ticket_link was assigned; null when unmatched"
+              },
+              "ticket_match_confidence": {
+                "type": ["string", "null"],
+                "enum": ["high", "medium", "low", null],
+                "description": "Claude confidence for semantic matches; null for rule matches"
+              },
+              "ticket_match_rationale": {
+                "type": ["string", "null"],
+                "description": "Claude rationale for semantic matches; null for rule matches"
               }
             }
           }
