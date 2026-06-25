@@ -18,8 +18,7 @@
     "job_summaries",
     "failed_analyses",
     "cross_job_patterns",
-    "historical_correlations",
-    "jira_sprint_tickets"
+    "historical_correlations"
   ],
   "properties": {
     "batch_id": {
@@ -465,50 +464,6 @@
               "secrets",
               "unknown"
             ]
-          }
-        }
-      }
-    },
-    "jira_sprint_tickets": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["sprints", "issues"],
-      "description": "Non-closed Jira issues in active sprints on the GPTEINFRA board, fetched via Jira API and JQL before analysis",
-      "properties": {
-        "sprints": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["id", "name"],
-            "properties": {
-              "id": {"type": "integer"},
-              "name": {"type": "string", "minLength": 1}
-            }
-          }
-        },
-        "issues": {
-          "type": "array",
-          "minItems": 1,
-          "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["key", "summary", "status", "ticket_url", "is_open"],
-            "properties": {
-              "key": {"type": "string", "minLength": 1},
-              "summary": {"type": "string"},
-              "status": {"type": "string"},
-              "sprint_name": {"type": "string"},
-              "ticket_url": {
-                "type": "string",
-                "format": "uri"
-              },
-              "is_open": {
-                "type": "boolean",
-                "default": true,
-                "description": "Whether the Jira issue is open (not Done/Closed/Resolved/Cancelled)"
-              }
-            }
           }
         }
       }

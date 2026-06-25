@@ -157,8 +157,7 @@ else
 fi
 
 JIRA_ISSUE_COUNT=$(python3 -c "import json; print(len(json.load(open('$JIRA_ISSUES_FILE')).get('issues',[])))")
-echo "[INFO] Found $JIRA_ISSUE_COUNT open Jira issue(s) on board $JIRA_BOARD_URL"
-python3 "$SCRIPT_DIR/scripts/print_jira_issues.py" "$JIRA_ISSUES_FILE"
+echo "[INFO] Found $JIRA_ISSUE_COUNT open Jira issue(s) on board $JIRA_BOARD_URL (stored at $JIRA_ISSUES_FILE)"
 
 if [ "$JIRA_ISSUE_COUNT" -eq 0 ]; then
   echo "[ERROR] No Jira board issues fetched — cannot assign ticket_link. Check JIRA_EMAIL and JIRA_API_TOKEN in settings.json."
@@ -209,15 +208,14 @@ Non-closed issues from board $JIRA_BOARD_URL are stored at:
 $JIRA_ISSUES_FILE
 
 Post-processing after your report is written runs assign_ticket_links.py (rule-based)
-and semantic_match_tickets.py (Claude fallback) to set jira_sprint_tickets and ticket_link
-when a confident match is found (rule min score $JIRA_MATCH_MIN_SCORE, semantic min confidence
+and semantic_match_tickets.py (Claude fallback) to set ticket_link on job_summaries when a
+confident match is found (rule min score $JIRA_MATCH_MIN_SCORE, semantic min confidence
 $JIRA_SEMANTIC_MIN_CONFIDENCE). Jobs without a strong match get null ticket_link.
 Do NOT read, match, or paste the full Jira issue list during aggregation.
 
-For schema compliance only, use these placeholders (they will be replaced in post-processing):
-- jira_sprint_tickets: {"sprints":[],"issues":[{"key":"PENDING","summary":"","status":"New","ticket_url":"$JIRA_PLACEHOLDER_URL","is_open":true}]}
-- ticket_link on every job_summaries entry: "$JIRA_PLACEHOLDER_URL" (may become null if no confident match)
-- is_open on every job_summaries entry: true (may become null if no confident match)
+For schema compliance only, use these placeholders on each job_summaries entry (replaced in post-processing):
+- ticket_link: "$JIRA_PLACEHOLDER_URL" (may become null if no confident match)
+- is_open: true (may become null if no confident match)
 
 **Instructions:**
 
@@ -242,7 +240,7 @@ For schema compliance only, use these placeholders (they will be replaced in pos
      catalog_item, cluster/platform, and job_duration_seconds
    - Detect cross-job patterns: first group jobs by root_cause_category, then within each
      group look for shared signals (same failing file, same missing resource, similar summary)
-   - Use the Jira placeholder values above for jira_sprint_tickets, ticket_link, and is_open
+   - Use the Jira placeholder values above for ticket_link and is_open on each job_summaries entry
    - Build the batch report JSON that conforms EXACTLY to the schema at:
      $SCHEMA_FILE
    - Read the schema file before writing the report; every required field must be present
@@ -362,7 +360,6 @@ if [ -f "$REPORT_FILE" ]; then
       exit 1
     }
   fi
-  python3 "$SCRIPT_DIR/scripts/print_jira_issues.py" "$JIRA_ISSUES_FILE"
 
   python3 "$SCRIPT_DIR/scripts/store_report.py" "$REPORT_FILE" || {
     echo "[WARN] Failed to store report in database (non-fatal)"

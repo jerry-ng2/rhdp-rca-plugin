@@ -183,7 +183,7 @@ def assign_links(
     if not issues:
         raise ValueError("Jira issue list is empty; cannot assign ticket_link")
 
-    report["jira_sprint_tickets"] = jira_data
+    report.pop("jira_sprint_tickets", None)
     jobs = report.get("job_summaries", [])
 
     for job in jobs:

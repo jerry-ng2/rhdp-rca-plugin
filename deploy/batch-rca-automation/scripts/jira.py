@@ -1,20 +1,22 @@
 #!/usr/bin/env python3
 """Fetch Jira issues via JQL."""
 
+from __future__ import annotations
+
 import argparse
 import json
 import os
 import re
 import sys
+from typing import Any
 from urllib.parse import urlparse
 
 import requests
 from dotenv import load_dotenv
-from normalize_jira_sprint_issues import normalize_data
 from requests.auth import HTTPBasicAuth
 
 PAGE_SIZE = 100
-FIELDS = ["summary", "status", "created", "assignee", "priority", "issuetype"]
+FIELDS = ["summary", "status", "description", "created", "assignee", "priority", "issuetype"]
 
 
 def search_sprint_issues(
@@ -213,6 +215,22 @@ def display_name(user: dict | None) -> str:
     return user.get("displayName") or user.get("emailAddress") or "-"
 
 
+def _plain_description(description: Any) -> str:
+    if description is None:
+        return ""
+    if isinstance(description, str):
+        return description
+    if isinstance(description, dict):
+        parts: list[str] = []
+        for block in description.get("content", []):
+            for item in block.get("content", []):
+                text = item.get("text")
+                if text:
+                    parts.append(text)
+        return " ".join(parts)
+    return str(description)
+
+
 def format_issue(issue: dict, base_url: str) -> dict:
     fields = issue.get("fields", {})
     status = fields.get("status") or {}
@@ -233,6 +251,45 @@ def format_issue(issue: dict, base_url: str) -> dict:
         "ticket_url": f"{base_url.rstrip('/')}/browse/{key}" if key else "",
         "is_open": is_open,
     }
+
+
+def format_batch_issue(
+    issue: dict, base_url: str, sprint_name: str = ""
+) -> dict:
+    fields = issue.get("fields", {})
+    status = fields.get("status") or {}
+    key = issue.get("key")
+    status_name = status.get("name")
+    status_category = (status.get("statusCategory") or {}).get("name")
+    is_open = status_category != "Done" if status_category else True
+    return {
+        "key": key,
+        "summary": fields.get("summary", "") or "",
+        "description": _plain_description(fields.get("description")),
+        "status": status_name,
+        "sprint_name": sprint_name,
+        "ticket_url": f"{base_url.rstrip('/')}/browse/{key}" if key else "",
+        "is_open": is_open,
+    }
+
+
+def prepare_batch_output(sprints: list[dict], issues: list[dict]) -> dict:
+    """Deduplicate and shape issues for batch RCA ticket matching."""
+    normalized_sprints = []
+    for sprint in sprints:
+        if isinstance(sprint, dict) and "id" in sprint:
+            normalized_sprints.append({"id": sprint["id"], "name": sprint.get("name", "")})
+
+    batch_issues: list[dict] = []
+    seen: set[str] = set()
+    for issue in issues:
+        key = str(issue.get("key", ""))
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        batch_issues.append(issue)
+
+    return {"sprints": normalized_sprints, "issues": batch_issues}
 
 
 def print_results(result: dict) -> None:
@@ -289,25 +346,33 @@ def fetch_board_issues(
     )
 
     sprints: list[dict] = []
+    raw_issues: list[dict] = []
+    batch_issues: list[dict] = []
     if board_id and active_sprint:
         active_sprints = get_active_sprints(base_url, auth, board_id)
         if not active_sprints:
             print("No active sprint found on this board.", file=sys.stderr)
             sys.exit(1)
-        issues = []
         for sprint in active_sprints:
             print(
                 f"Active sprint: {sprint['name']} (id={sprint['id']})",
                 file=sys.stderr,
             )
             sprints.append({"id": sprint["id"], "name": sprint["name"]})
-            issues.extend(
-                search_sprint_issues(base_url, auth, board_id, sprint["id"], jql)
-            )
+            sprint_name = sprint.get("name", "")
+            for issue in search_sprint_issues(
+                base_url, auth, board_id, sprint["id"], jql
+            ):
+                raw_issues.append(issue)
+                batch_issues.append(
+                    format_batch_issue(issue, base_url, sprint_name)
+                )
     elif board_id:
-        issues = search_board_issues(base_url, auth, board_id, jql)
+        raw_issues = search_board_issues(base_url, auth, board_id, jql)
+        batch_issues = [format_batch_issue(issue, base_url) for issue in raw_issues]
     else:
-        issues = search_issues(base_url, auth, jql)
+        raw_issues = search_issues(base_url, auth, jql)
+        batch_issues = [format_batch_issue(issue, base_url) for issue in raw_issues]
 
     return {
         "project": project_id,
@@ -316,8 +381,9 @@ def fetch_board_issues(
         "include_done": include_done,
         "jql": jql,
         "sprints": sprints or None,
-        "count": len(issues),
-        "issues": [format_issue(issue, base_url) for issue in issues],
+        "count": len(raw_issues),
+        "issues": [format_issue(issue, base_url) for issue in raw_issues],
+        "batch_issues": batch_issues,
     }
 
 
@@ -354,12 +420,9 @@ def main() -> None:
     )
 
     if args.output:
-        batch_data = normalize_data(
-            {
-                "sprints": result.get("sprints") or [],
-                "issues": result["issues"],
-            },
-            base_url,
+        batch_data = prepare_batch_output(
+            result.get("sprints") or [],
+            result["batch_issues"],
         )
         with open(args.output, "w") as f:
             json.dump(batch_data, f, indent=2)
