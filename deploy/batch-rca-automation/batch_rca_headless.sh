@@ -336,7 +336,6 @@ if [ -f "$REPORT_FILE" ]; then
         --semantic-min-confidence "$JIRA_SEMANTIC_MIN_CONFIDENCE" \
         --in-place || {
         echo "[ERROR] Failed to assign ticket_link values"
-        exit 1
       }
     else
       echo "[WARN] Semantic matching failed; continuing with rule-based matching only"
@@ -346,7 +345,6 @@ if [ -f "$REPORT_FILE" ]; then
         --min-score "$JIRA_MATCH_MIN_SCORE" \
         --in-place || {
         echo "[ERROR] Failed to assign ticket_link values"
-        exit 1
       }
     fi
   else
@@ -357,7 +355,6 @@ if [ -f "$REPORT_FILE" ]; then
       --min-score "$JIRA_MATCH_MIN_SCORE" \
       --in-place || {
       echo "[ERROR] Failed to assign ticket_link values"
-      exit 1
     }
   fi
 
