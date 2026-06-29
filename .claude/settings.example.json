@@ -20,7 +20,10 @@
     "MLFLOW_TRACKING_URI": "<mlflow-tracking-uri>",
     "MLFLOW_TRACKING_USERNAME": "<username>",
     "MLFLOW_TRACKING_PASSWORD": "<password>",
-    "MLFLOW_TAG_USER": "<your-username>"
+    "MLFLOW_TAG_USER": "<your-username>",
+    "JIRA_MATCH_MIN_SCORE": "25",
+    "JIRA_SEMANTIC_MATCH_ENABLED": "true",
+    "JIRA_SEMANTIC_MIN_CONFIDENCE": "medium"
   },
   "hooks": {
     "SessionStart": [
