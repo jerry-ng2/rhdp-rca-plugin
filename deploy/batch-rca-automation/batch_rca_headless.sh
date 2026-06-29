@@ -9,8 +9,7 @@ set -euo pipefail
 # 1. Queries source PostgreSQL table for unanalyzed job IDs (ai_proccessed = FALSE)
 # 2. Invokes Claude in headless mode to run parallel RCA on those jobs
 #
-# Requires SOURCE_DB_* env vars (HOST, PORT, NAME, USER, PASSWORD, TABLE)
-# set in .claude/settings.json under "env".
+# Requires SOURCE_DB_* and JIRA_* env vars set in .claude/settings.json under "env".
 #
 # Usage:
 #   ./batch_rca_headless.sh [--since 'YYYY-MM-DD HH:MM:SS'] [--limit N]
@@ -20,18 +19,34 @@ set -euo pipefail
 #
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 REPORT_DIR="$SCRIPT_DIR/reports"
+mkdir -p "$REPORT_DIR"
 SCHEMA_FILE="$SCRIPT_DIR/schemas/batch_report.schema.json"
 TIMESTAMP=$(date -u +%Y%m%d_%H%M%S)
 BATCH_ID="batch_${TIMESTAMP}"
 
 # Load environment variables from Claude settings.json
-SETTINGS_FILE="$SCRIPT_DIR/.claude/settings.json"
-if [ ! -f "$SETTINGS_FILE" ]; then
-  echo "[ERROR] Claude settings.json not found at: $SETTINGS_FILE"
-  echo "[ERROR] Please ensure .claude/settings.json exists with env variables configured"
+# Prefer local override (e.g. OpenShift workspace), then repo-root settings
+SETTINGS_FILE=""
+for candidate in \
+  "$SCRIPT_DIR/.claude/settings.json" \
+  "$REPO_ROOT/.claude/settings.json" \
+  "$REPO_ROOT/.claude/settings.local.json"; do
+  if [ -f "$candidate" ]; then
+    SETTINGS_FILE="$candidate"
+    break
+  fi
+done
+if [ -z "$SETTINGS_FILE" ]; then
+  echo "[ERROR] Claude settings.json not found. Checked:"
+  echo "[ERROR]   $SCRIPT_DIR/.claude/settings.json"
+  echo "[ERROR]   $REPO_ROOT/.claude/settings.json"
+  echo "[ERROR]   $REPO_ROOT/.claude/settings.local.json"
+  echo "[ERROR] Please ensure one of these exists with env variables configured"
   exit 1
 fi
+echo "[INFO] Using Claude settings: $SETTINGS_FILE"
 
 # Extract env vars from JSON using python
 eval "$(python3 -c "
@@ -47,6 +62,13 @@ except Exception as e:
 ")"
 
 echo "[INFO] Environment variables loaded from settings.json"
+
+for var in JIRA_BOARD_URL JIRA_EMAIL JIRA_API_TOKEN; do
+  if [ -z "${!var:-}" ]; then
+    echo "[ERROR] $var is not set in settings.json (env section)"
+    exit 1
+  fi
+done
 
 # Default: look back 30 minutes (matches the cron interval)
 SINCE=""
@@ -108,6 +130,7 @@ fi
 JOB_COUNT=$(echo "$JOB_IDS" | wc -l | tr -d ' ')
 JOBS_LIST=$(echo "$JOB_IDS" | tr '\n' ' ' | sed 's/ $//')
 echo "[INFO] Found $JOB_COUNT job(s) to analyze: $JOBS_LIST"
+echo "[INFO] Jira board for ticket matching: $JIRA_BOARD_URL"
 
 #############################################
 # Step 1b: Query historical open issues
@@ -116,6 +139,40 @@ echo "[STEP 1b] Querying historical open issues..."
 OPEN_ISSUES=$(python3 "$SCRIPT_DIR/scripts/query_open_issues.py" --limit 30 2>/dev/null || echo "[]")
 OPEN_COUNT=$(echo "$OPEN_ISSUES" | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo "0")
 echo "[INFO] Found $OPEN_COUNT historical open issue group(s)"
+
+#############################################
+# Step 1c: Fetch Jira board issues via API (before RCA)
+#############################################
+JIRA_ISSUES_FILE="$REPORT_DIR/.jira_sprint_${TIMESTAMP}.json"
+echo "[STEP 1c] Fetching Jira board issues via Jira API..."
+
+if python3 "$SCRIPT_DIR/scripts/jira.py" \
+  --board-url "$JIRA_BOARD_URL" \
+  --active-sprint \
+  --output "$JIRA_ISSUES_FILE"; then
+  echo "[INFO] Fetched Jira board issues from Jira API"
+else
+  echo "[WARN] Jira API fetch failed; using empty issue list"
+  echo '{"sprints":[],"issues":[]}' > "$JIRA_ISSUES_FILE"
+fi
+
+JIRA_ISSUE_COUNT=$(python3 -c "import json; print(len(json.load(open('$JIRA_ISSUES_FILE')).get('issues',[])))")
+echo "[INFO] Found $JIRA_ISSUE_COUNT open Jira issue(s) on board $JIRA_BOARD_URL (stored at $JIRA_ISSUES_FILE)"
+
+if [ "$JIRA_ISSUE_COUNT" -eq 0 ]; then
+  echo "[ERROR] No Jira board issues fetched — cannot assign ticket_link. Check JIRA_EMAIL and JIRA_API_TOKEN in settings.json."
+  exit 1
+fi
+
+JIRA_PLACEHOLDER_URL="$(python3 -c "
+from urllib.parse import urlparse
+u = urlparse('${JIRA_BOARD_URL}')
+print(f'{u.scheme}://{u.netloc}/browse/PENDING')
+")"
+
+JIRA_MATCH_MIN_SCORE="${JIRA_MATCH_MIN_SCORE:-15}"
+JIRA_SEMANTIC_MATCH_ENABLED="${JIRA_SEMANTIC_MATCH_ENABLED:-true}"
+JIRA_SEMANTIC_MIN_CONFIDENCE="${JIRA_SEMANTIC_MIN_CONFIDENCE:-medium}"
 
 #############################################
 # Step 2: Build Dynamic Claude Prompt
@@ -127,8 +184,10 @@ if [ ! -f "$SCHEMA_FILE" ]; then
   exit 1
 fi
 
-# Build the orchestration prompt
-read -r -d '' CLAUDE_PROMPT <<EOF || true
+# Write prompt to a file and pass via stdin. Embedding the full Jira issue list
+# on the command line exceeds ARG_MAX once all non-closed board issues are fetched.
+PROMPT_FILE="$REPORT_DIR/.batch_prompt_${TIMESTAMP}.txt"
+cat > "$PROMPT_FILE" <<EOF
 You are running in headless mode to analyze failed jobs in parallel.
 
 **Job IDs to analyze:** $JOBS_LIST
@@ -143,6 +202,20 @@ match. Then check for additional overlap (same catalog_item, same cluster, or si
 root_cause_summary). Include matches in the historical_correlations array in the batch report.
 
 $OPEN_ISSUES
+
+**Jira tickets (pre-fetched — do NOT load the full list into this prompt):**
+Non-closed issues from board $JIRA_BOARD_URL are stored at:
+$JIRA_ISSUES_FILE
+
+Post-processing after your report is written runs assign_ticket_links.py (rule-based)
+and semantic_match_tickets.py (Claude fallback) to set ticket_link on job_summaries when a
+confident match is found (rule min score $JIRA_MATCH_MIN_SCORE, semantic min confidence
+$JIRA_SEMANTIC_MIN_CONFIDENCE). Jobs without a strong match get null ticket_link.
+Do NOT read, match, or paste the full Jira issue list during aggregation.
+
+For schema compliance only, use these placeholders on each job_summaries entry (replaced in post-processing):
+- ticket_link: "$JIRA_PLACEHOLDER_URL" (may become null if no confident match)
+- is_open: true (may become null if no confident match)
 
 **Instructions:**
 
@@ -167,6 +240,7 @@ $OPEN_ISSUES
      catalog_item, cluster/platform, and job_duration_seconds
    - Detect cross-job patterns: first group jobs by root_cause_category, then within each
      group look for shared signals (same failing file, same missing resource, similar summary)
+   - Use the Jira placeholder values above for ticket_link and is_open on each job_summaries entry
    - Build the batch report JSON that conforms EXACTLY to the schema at:
      $SCHEMA_FILE
    - Read the schema file before writing the report; every required field must be present
@@ -194,9 +268,12 @@ $OPEN_ISSUES
    - Number of jobs analyzed successfully
    - Number of failures (if any)
    - Report location
+   - Note that Jira ticket_link values are assigned in post-processing (rule + semantic matching)
 
 **Note:** The root-cause-analysis skill handles Steps 1-5 automatically, including Claude's analysis in Step 5.
 EOF
+
+echo "[INFO] Prompt written to $PROMPT_FILE ($(wc -c < "$PROMPT_FILE" | tr -d ' ') bytes)"
 
 #############################################
 # Step 3: Setup MLflow
@@ -222,16 +299,14 @@ fi
 #############################################
 echo "[STEP 4] Executing Claude in headless mode..."
 
-mkdir -p "$REPORT_DIR"
-
 # Run claude in non-interactive mode with permissions bypass for testing
 # Note: -p/--print flag for non-interactive output
 # Using --dangerously-skip-permissions for testing only
 # Run from repo root to pick up .claude/settings.json (MLflow hooks, env vars)
 
-cd "$SCRIPT_DIR" || exit 1
+cd "$REPO_ROOT" || exit 1
 
-claude -p --dangerously-skip-permissions "$CLAUDE_PROMPT" || {
+claude -p --dangerously-skip-permissions < "$PROMPT_FILE" || {
   echo "[ERROR] Claude execution failed"
   exit 1
 }
@@ -242,7 +317,47 @@ claude -p --dangerously-skip-permissions "$CLAUDE_PROMPT" || {
 echo "[STEP 5] Storing report in local database..."
 
 REPORT_FILE="$REPORT_DIR/batch_${TIMESTAMP}.json"
+SEMANTIC_MATCHES_FILE="$REPORT_DIR/.semantic_matches_${TIMESTAMP}.json"
 if [ -f "$REPORT_FILE" ]; then
+  if [ "$JIRA_SEMANTIC_MATCH_ENABLED" = "true" ]; then
+    echo "[STEP 5b] Running semantic Jira ticket matching (fallback for rule score < $JIRA_MATCH_MIN_SCORE)..."
+    if python3 "$SCRIPT_DIR/scripts/semantic_match_tickets.py" \
+      "$REPORT_FILE" \
+      --jira-issues "$JIRA_ISSUES_FILE" \
+      --min-rule-score "$JIRA_MATCH_MIN_SCORE" \
+      --repo-root "$REPO_ROOT" \
+      --output "$SEMANTIC_MATCHES_FILE"; then
+      echo "[STEP 5c] Assigning ticket_link (rule + semantic merge, min_score=$JIRA_MATCH_MIN_SCORE)..."
+      python3 "$SCRIPT_DIR/scripts/assign_ticket_links.py" \
+        "$REPORT_FILE" \
+        --jira-issues "$JIRA_ISSUES_FILE" \
+        --semantic-matches "$SEMANTIC_MATCHES_FILE" \
+        --min-score "$JIRA_MATCH_MIN_SCORE" \
+        --semantic-min-confidence "$JIRA_SEMANTIC_MIN_CONFIDENCE" \
+        --in-place || {
+        echo "[ERROR] Failed to assign ticket_link values"
+      }
+    else
+      echo "[WARN] Semantic matching failed; continuing with rule-based matching only"
+      python3 "$SCRIPT_DIR/scripts/assign_ticket_links.py" \
+        "$REPORT_FILE" \
+        --jira-issues "$JIRA_ISSUES_FILE" \
+        --min-score "$JIRA_MATCH_MIN_SCORE" \
+        --in-place || {
+        echo "[ERROR] Failed to assign ticket_link values"
+      }
+    fi
+  else
+    echo "[STEP 5b] Assigning ticket_link from pre-fetched Jira sprint issues (min_score=$JIRA_MATCH_MIN_SCORE)..."
+    python3 "$SCRIPT_DIR/scripts/assign_ticket_links.py" \
+      "$REPORT_FILE" \
+      --jira-issues "$JIRA_ISSUES_FILE" \
+      --min-score "$JIRA_MATCH_MIN_SCORE" \
+      --in-place || {
+      echo "[ERROR] Failed to assign ticket_link values"
+    }
+  fi
+
   python3 "$SCRIPT_DIR/scripts/store_report.py" "$REPORT_FILE" || {
     echo "[WARN] Failed to store report in database (non-fatal)"
   }

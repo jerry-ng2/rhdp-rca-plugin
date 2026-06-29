@@ -279,6 +279,34 @@
               "analysis_path": {
                 "type": "string",
                 "pattern": "^\\.analysis/[0-9]+/step5_analysis_summary\\.json$"
+              },
+              "ticket_link": {
+                "type": ["string", "null"],
+                "format": "uri",
+                "description": "URL to the best-matching Jira ticket from rule-based or semantic post-processing; null when no confident match"
+              },
+              "is_open": {
+                "type": ["boolean", "null"],
+                "description": "Whether the matched Jira ticket is open; null when ticket_link is null"
+              },
+              "ticket_match_score": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Rule-based match score from assign_ticket_links.py post-processing"
+              },
+              "ticket_match_method": {
+                "type": ["string", "null"],
+                "enum": ["rule", "semantic", null],
+                "description": "How ticket_link was assigned; null when unmatched"
+              },
+              "ticket_match_confidence": {
+                "type": ["string", "null"],
+                "enum": ["high", "medium", "low", null],
+                "description": "Claude confidence for semantic matches; null for rule matches"
+              },
+              "ticket_match_rationale": {
+                "type": ["string", "null"],
+                "description": "Claude rationale for semantic matches; null for rule matches"
               }
             }
           },
@@ -307,6 +335,34 @@
               "analysis_path": {
                 "type": "string",
                 "pattern": "^\\.analysis/[0-9]+/step5_analysis_summary\\.json$"
+              },
+              "ticket_link": {
+                "type": ["string", "null"],
+                "format": "uri",
+                "description": "URL to the best-matching Jira ticket from rule-based or semantic post-processing; null when no confident match"
+              },
+              "is_open": {
+                "type": ["boolean", "null"],
+                "description": "Whether the matched Jira ticket is open; null when ticket_link is null"
+              },
+              "ticket_match_score": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Rule-based match score from assign_ticket_links.py post-processing"
+              },
+              "ticket_match_method": {
+                "type": ["string", "null"],
+                "enum": ["rule", "semantic", null],
+                "description": "How ticket_link was assigned; null when unmatched"
+              },
+              "ticket_match_confidence": {
+                "type": ["string", "null"],
+                "enum": ["high", "medium", "low", null],
+                "description": "Claude confidence for semantic matches; null for rule matches"
+              },
+              "ticket_match_rationale": {
+                "type": ["string", "null"],
+                "description": "Claude rationale for semantic matches; null for rule matches"
               }
             }
           }
