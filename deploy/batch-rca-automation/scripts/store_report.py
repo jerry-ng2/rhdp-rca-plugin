@@ -1,4 +1,4 @@
-"""Store batch RCA JSON reports into a local SQLite database."""
+"""Store batch RCA JSON reports into a results table on the source database."""
 
 from __future__ import annotations
 
@@ -6,15 +6,58 @@ import argparse
 import glob
 import json
 import os
-import sqlite3
 import sys
 from typing import Any
 
-def open_db(db_path: str) -> sqlite3.Connection:
-    return sqlite3.connect(db_path, timeout=10)
+import psycopg2
+import psycopg2.extras
+import psycopg2.sql
+from dotenv import load_dotenv
 
 
-def store_report(conn: sqlite3.Connection, report: dict[str, Any], filename: str | None = None) -> bool:
+def load_config() -> dict[str, Any]:
+    env_file = os.path.join(os.path.dirname(__file__), "..", ".env")
+    if os.path.exists(env_file):
+        load_dotenv(env_file)
+
+    config = {
+        "host": os.environ.get("SOURCE_DB_HOST", "localhost"),
+        "port": int(os.environ.get("SOURCE_DB_PORT", "5432")),
+        "name": os.environ.get("SOURCE_DB_NAME", ""),
+        "user": os.environ.get("SOURCE_DB_USER", ""),
+        "password": os.environ.get("SOURCE_DB_PASSWORD", ""),
+        "results_table": os.environ.get("SOURCE_DB_RESULT_TABLE", ""),
+    }
+
+    errors = []
+    required_keys = {
+        "name": "SOURCE_DB_NAME",
+        "user": "SOURCE_DB_USER",
+        "password": "SOURCE_DB_PASSWORD",
+        "results_table": "SOURCE_DB_RESULT_TABLE",
+    }
+    for key, env_var in required_keys.items():
+        if not config[key]:
+            errors.append(f"{env_var} is required")
+    if errors:
+        print("\n".join(errors), file=sys.stderr)
+        raise SystemExit(1)
+
+    return config
+
+
+def connect_db(config: dict[str, Any]) -> Any:
+    return psycopg2.connect(
+        host=config["host"],
+        port=config["port"],
+        dbname=config["name"],
+        user=config["user"],
+        password=config["password"],
+    )
+
+
+
+def store_report(conn: Any, table: str, report: dict[str, Any], filename: str | None = None) -> bool:
     batch_id = report.get("batch_id")
     if not batch_id and filename:
         base = os.path.splitext(os.path.basename(filename))[0]
@@ -23,8 +66,6 @@ def store_report(conn: sqlite3.Connection, report: dict[str, Any], filename: str
         print("[ERROR] Cannot determine batch_id", file=sys.stderr)
         return False
 
-    # Build per-job correlation info from both intra-batch cross_job_patterns
-    # and historical_correlations
     correlated_jobs: dict[str, set[str]] = {}
     descriptions: dict[str, list[str]] = {}
 
@@ -49,44 +90,44 @@ def store_report(conn: sqlite3.Connection, report: dict[str, Any], filename: str
             descriptions.setdefault(jid, []).append(desc)
 
     jobs = report.get("job_results") or report.get("job_summaries") or report.get("jobs", [])
-    for job in jobs:
-        jid = str(job.get("job_id", ""))
-        related = sorted(correlated_jobs.get(jid, set()))
-        descs = descriptions.get(jid, [])
-        conn.execute(
-            """INSERT OR IGNORE INTO job_results
-               (batch_id, job_id, status, root_cause_category, root_cause_summary,
-                confidence, cluster, catalog_item, guid, job_duration_seconds,
-                cross_job_pattern, cross_job_pattern_description)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                batch_id,
-                jid,
-                job.get("status"),
-                job.get("root_cause_category"),
-                job.get("root_cause_summary"),
-                job.get("confidence"),
-                job.get("cluster"),
-                job.get("catalog_item"),
-                job.get("guid"),
-                job.get("job_duration_seconds"),
-                ",".join(related) if related else None,
-                " | ".join(descs) if descs else None,
-            ),
-        )
+    with conn.cursor() as cur:
+        for job in jobs:
+            jid = str(job.get("job_id", ""))
+            related = sorted(correlated_jobs.get(jid, set()))
+            descs = descriptions.get(jid, [])
+            cur.execute(
+                psycopg2.sql.SQL(
+                    """INSERT INTO {}
+                       (batch_id, job_id, status, root_cause_category, root_cause_summary,
+                        confidence, catalog_item, job_duration_seconds,
+                        cross_job_pattern, cross_job_pattern_description, ticket_link, is_open)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                       ON CONFLICT (batch_id, job_id) DO NOTHING"""
+                ).format(psycopg2.sql.Identifier(table)),
+                (
+                    batch_id,
+                    jid,
+                    job.get("status"),
+                    job.get("root_cause_category"),
+                    job.get("root_cause_summary"),
+                    job.get("confidence"),
+                    job.get("catalog_item"),
+                    job.get("job_duration_seconds"),
+                    ",".join(related) if related else None,
+                    " | ".join(descs) if descs else None,
+                    job.get("ticket_link"),
+                    job.get("is_open", False),
+                ),
+            )
 
     conn.commit()
     return True
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Store batch RCA reports in SQLite")
+    parser = argparse.ArgumentParser(description="Store batch RCA reports in PostgreSQL")
     parser.add_argument(
         "report", nargs="?", help="Path to a batch report JSON file"
-    )
-    parser.add_argument(
-        "--db", default=None,
-        help="SQLite database path (default: reports/batch_rca.db relative to script)"
     )
     parser.add_argument(
         "--backfill", metavar="DIR",
@@ -97,13 +138,19 @@ def main(argv: list[str] | None = None) -> int:
     if not args.report and not args.backfill:
         parser.error("Provide a report path or --backfill DIR")
 
-    db_path = args.db
-    if not db_path:
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        db_path = os.path.join(script_dir, "..", "reports", "batch_rca.db")
+    try:
+        config = load_config()
+    except SystemExit:
+        return 1
 
-    os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
-    conn = open_db(db_path)
+    try:
+        conn = connect_db(config)
+    except psycopg2.OperationalError as e:
+        print(f"Cannot connect to database: {e}", file=sys.stderr)
+        return 1
+
+    print(f"[INFO] Connected as user: {config['user']} on {config['results_table']}")
+    results_table = config["results_table"]
 
     files: list[str] = []
     if args.backfill:
@@ -124,14 +171,14 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[ERROR] Failed to read {path}: {e}", file=sys.stderr)
             continue
 
-        if store_report(conn, report, filename=path):
+        if store_report(conn, results_table, report, filename=path):
             bid = report.get("batch_id") or os.path.splitext(os.path.basename(path))[0]
             jobs = report.get("job_results") or report.get("job_summaries") or report.get("jobs", [])
             inserted += 1
             print(f"[OK] Stored {bid} ({len(jobs)} jobs)")
 
     conn.close()
-    print(f"[DONE] {inserted}/{len(files)} report(s) stored in {db_path}")
+    print(f"[DONE] {inserted}/{len(files)} report(s) stored in {results_table}")
     return 0
 
 

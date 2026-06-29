@@ -18,7 +18,7 @@ spec:
           restartPolicy: Never
           initContainers:
           - name: setup-ssh
-            image: <YOUR_REGISTRY>/claude-ci-test/claude-rca:latest
+            image: image-registry.openshift-image-registry.svc:5000/claude-ci-test/rhdp-rca-plugin:latest
             command:
             - bash
             - -c
@@ -49,18 +49,14 @@ spec:
               cp /tmp/claude-settings/settings.json /workspace/.claude/settings.json
               cp /tmp/gcp-creds/application_default_credentials.json /workspace/.config/gcloud/application_default_credentials.json
 
-              echo "[INIT] Installing skills to local directory..."
-              mkdir -p /workspace/.claude/skills
-              if [ -d /workspace/.claude/plugins/marketplaces/aiops-marketplace/skills ]; then
-                # Copy skills excluding .analysis (job results), __pycache__, tests, README.md
-                rsync -a --exclude='.analysis' --exclude='__pycache__' --exclude='*.pyc' --exclude='tests' --exclude='README.md' \
-                  /workspace/.claude/plugins/marketplaces/aiops-marketplace/skills/ \
-                  /workspace/.claude/skills/
-                echo "[INIT] Skills installed: $(ls /workspace/.claude/skills/ | tr '\n' ' ')"
-                echo "[INIT] Skills size: $(du -sh /workspace/.claude/skills 2>/dev/null || echo 'unknown')"
-              else
-                echo "[INIT] WARNING: No marketplace skills found at /workspace/.claude/plugins/marketplaces/aiops-marketplace/skills"
-              fi
+              echo "[INIT] Copying skills and scripts from image..."
+              mkdir -p /workspace/.claude/skills /workspace/.claude/plugins/cache
+              rsync -a --exclude='.analysis' --exclude='__pycache__' --exclude='*.pyc' --exclude='tests' --exclude='README.md' \
+                /opt/app/skills/ /workspace/.claude/skills/
+              cp -r /opt/app/plugins-cache/* /workspace/.claude/plugins/cache/
+              cp /opt/app/batch/batch_rca_headless.sh /workspace/batch_rca_headless.sh
+              chmod +x /workspace/batch_rca_headless.sh
+              echo "[INIT] Skills installed: $(ls /workspace/.claude/skills/ | tr '\n' ' ')"
             volumeMounts:
             - name: workspace
               mountPath: /workspace
@@ -75,7 +71,7 @@ spec:
               readOnly: true
           containers:
           - name: batch-rca
-            image: <YOUR_REGISTRY>/claude-ci-test/claude-rca:latest
+            image: image-registry.openshift-image-registry.svc:5000/claude-ci-test/rhdp-rca-plugin:latest
             command:
             - /bin/bash
             - -c

@@ -55,9 +55,18 @@ The orchestration script (`batch_rca_headless.sh`):
 
 **Batch Reports:** `/workspace/reports/batch_YYYYMMDD_HHMMSS.json`
 
-Reports must conform to `schemas/batch_report.schema.json`. The orchestration script passes this schema path to Claude during aggregation.
-
-Required top-level fields: `batch_id`, `generated_at`, `total_jobs_requested`, `total_jobs_analyzed`, `total_jobs_failed`, `timing`, `root_cause_category_breakdown`, `confidence_breakdown`, `high_priority_recommendations`, `job_summaries`, `failed_analyses`, `cross_job_patterns`.
+```json
+{
+  "batch_id": "batch_YYYYMMDD_HHMMSS",
+  "total_jobs_requested": 4,
+  "total_jobs_completed": 4,
+  "root_cause_category_breakdown": {
+    "infrastructure": 3,
+    "configuration": 1
+  },
+  "job_summaries": [...]
+}
+```
 
 **Individual Analysis:** `/workspace/.claude/skills/root-cause-analysis/.analysis/{job_id}/`
 - Session metadata, job context, Splunk logs, correlation analysis, GitHub history, final RCA report
