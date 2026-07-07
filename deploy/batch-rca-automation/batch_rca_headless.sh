@@ -6,7 +6,8 @@ set -euo pipefail
 #############################################
 #
 # This script:
-# 1. Queries source PostgreSQL table for unanalyzed job IDs (ai_proccessed = FALSE)
+# 1. Queries source PostgreSQL table for unanalyzed job IDs (ai_processed = FALSE)
+# 1a. Pre-fetches logs from per-cluster bastions (via jumpbox ProxyJump)
 # 2. Invokes Claude in headless mode to run parallel RCA on those jobs
 #
 # Requires SOURCE_DB_* env vars (HOST, PORT, NAME, USER, PASSWORD, TABLE)
@@ -92,22 +93,31 @@ if [ -n "$LIMIT" ]; then
   QUERY_ARGS+=(--limit "$LIMIT")
 fi
 
-JOB_IDS=$(python3 "$SCRIPT_DIR/scripts/query_source_db.py" "${QUERY_ARGS[@]}")
+JOBS_JSON=$(python3 "$SCRIPT_DIR/scripts/query_source_db.py" "${QUERY_ARGS[@]}" --json)
 
 if [ $? -ne 0 ]; then
   echo "[ERROR] Source DB query failed"
   exit 1
 fi
 
-if [ -z "$JOB_IDS" ]; then
+if [ -z "$JOBS_JSON" ] || [ "$JOBS_JSON" = "[]" ]; then
   echo "[INFO] No unanalyzed jobs found"
   echo "[SUCCESS] Batch RCA completed at $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
   exit 0
 fi
 
+JOB_IDS=$(echo "$JOBS_JSON" | python3 -c "import sys,json; jobs=json.load(sys.stdin); print('\n'.join(str(j['job_id']) for j in jobs))")
 JOB_COUNT=$(echo "$JOB_IDS" | wc -l | tr -d ' ')
 JOBS_LIST=$(echo "$JOB_IDS" | tr '\n' ' ' | sed 's/ $//')
 echo "[INFO] Found $JOB_COUNT job(s) to analyze: $JOBS_LIST"
+
+#############################################
+# Step 1a: Pre-fetch logs from per-cluster bastions
+#############################################
+echo "[STEP 1a] Pre-fetching logs from per-cluster bastions..."
+echo "$JOBS_JSON" | python3 "$SCRIPT_DIR/scripts/prefetch_job_logs.py" || {
+  echo "[WARN] Log prefetch had failures (continuing with available logs)"
+}
 
 #############################################
 # Step 1b: Query historical open issues

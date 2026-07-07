@@ -46,3 +46,6 @@ experiments/combine_rca_context/*.xlsx
 # OpenShift runner secrets
 deploy/settings.json
 deploy/secrets.yaml
+
+reports/
+settings.json

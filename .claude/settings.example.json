@@ -17,7 +17,10 @@
     "MLFLOW_TRACKING_URI": "<mlflow-tracking-uri>",
     "MLFLOW_TRACKING_USERNAME": "<username>",
     "MLFLOW_TRACKING_PASSWORD": "<password>",
-    "MLFLOW_TAG_USER": "<your-username>"
+    "MLFLOW_TAG_USER": "<your-username>",
+    "SOURCE_DB_BASTION_TABLE": "aap2_user_url",
+    "SSH_JUMPBOX_ALIAS": "rca-jumpbox",
+    "BASTION_SSH_USER": "<bastion-ssh-username>"
   },
   "hooks": {
     "SessionStart": [
