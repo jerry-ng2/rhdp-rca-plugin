@@ -1,12 +1,14 @@
 """Query source PostgreSQL table for unanalyzed job IDs.
 
 Reads events where ai_processed = FALSE and outputs distinct job IDs,
-one per line. The batch script passes these to Claude agents for RCA.
+one per line. Joins aap2_user_url to resolve per-cluster bastion targets.
+The batch script passes these to Claude agents for RCA.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from typing import Any
@@ -29,6 +31,7 @@ def load_config() -> dict[str, Any]:
         "user": os.environ.get("SOURCE_DB_USER", ""),
         "password": os.environ.get("SOURCE_DB_PASSWORD", ""),
         "table": os.environ.get("SOURCE_DB_TABLE", ""),
+        "bastion_table": os.environ.get("SOURCE_DB_BASTION_TABLE", "aap2_user_url"),
     }
 
     errors = []
@@ -54,14 +57,18 @@ def connect_db(config: dict[str, Any]) -> Any:
     )
 
 
-def query_job_ids(
-    conn: Any, table: str, since: str | None = None, limit: int | None = None
-) -> list[int]:
-    conditions = ["(ai_processed IS NULL OR ai_processed = FALSE)"]
+def query_jobs(
+    conn: Any,
+    events_table: str,
+    bastion_table: str,
+    since: str | None = None,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    conditions = ["(e.ai_processed IS NULL OR e.ai_processed = FALSE)"]
     params: list[Any] = []
 
     if since:
-        conditions.append("job_started >= %s")
+        conditions.append("e.job_started >= %s")
         params.append(since)
 
     suffix = ""
@@ -70,15 +77,39 @@ def query_job_ids(
         params.append(limit)
 
     query = psycopg2.sql.SQL(
-        "SELECT DISTINCT job_id "
-        "FROM {} "
+        "SELECT DISTINCT ON (e.job_id) "
+        "e.job_id, e.cluster_name, "
+        "u.bastion_hostname, u.bastion_ssh_port "
+        "FROM {} e "
+        "LEFT JOIN {} u ON e.cluster_name = u.cluster_name "
         "WHERE " + " AND ".join(conditions) + " "
-        "ORDER BY job_id DESC" + suffix
-    ).format(psycopg2.sql.Identifier(table))
+        "ORDER BY e.job_id DESC, e.job_started DESC" + suffix
+    ).format(
+        psycopg2.sql.Identifier(events_table),
+        psycopg2.sql.Identifier(bastion_table),
+    )
 
     with conn.cursor() as cur:
         cur.execute(query, params)
-        return [row["job_id"] for row in cur.fetchall()]
+        rows = cur.fetchall()
+
+    jobs: list[dict[str, Any]] = []
+    for row in rows:
+        job = {
+            "job_id": row["job_id"],
+            "cluster_name": row["cluster_name"],
+            "bastion_hostname": row["bastion_hostname"],
+            "bastion_ssh_port": row["bastion_ssh_port"],
+        }
+        if not row["bastion_hostname"]:
+            print(
+                f"[WARN] No bastion mapping in {bastion_table} for job "
+                f"{row['job_id']} (cluster_name={row['cluster_name']!r})",
+                file=sys.stderr,
+            )
+        jobs.append(job)
+
+    return jobs
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -94,8 +125,12 @@ def main(argv: list[str] | None = None) -> int:
         help="Maximum number of job IDs to return"
     )
     parser.add_argument(
+        "--json", action="store_true",
+        help="Output JSON array with job_id, cluster_name, and bastion fields"
+    )
+    parser.add_argument(
         "--output", "-o", type=str, default=None,
-        help="Save job IDs to this file (default: print to stdout)"
+        help="Save output to this file (default: print to stdout)"
     )
     args = parser.parse_args(argv)
 
@@ -107,7 +142,13 @@ def main(argv: list[str] | None = None) -> int:
     conn = None
     try:
         conn = connect_db(config)
-        job_ids = query_job_ids(conn, config["table"], args.since, args.limit)
+        jobs = query_jobs(
+            conn,
+            config["table"],
+            config["bastion_table"],
+            args.since,
+            args.limit,
+        )
     except psycopg2.OperationalError as e:
         print(f"Cannot connect to source database: {e}", file=sys.stderr)
         return 1
@@ -118,14 +159,17 @@ def main(argv: list[str] | None = None) -> int:
         if conn:
             conn.close()
 
-    output = "\n".join(str(jid) for jid in job_ids)
+    if args.json:
+        output = json.dumps(jobs, default=str)
+    else:
+        output = "\n".join(str(job["job_id"]) for job in jobs)
+
     if args.output:
         with open(args.output, "w") as f:
             f.write(output + "\n" if output else "")
-        print(f"Saved {len(job_ids)} job ID(s) to {args.output}", file=sys.stderr)
-    else:
-        if output:
-            print(output)
+        print(f"Saved {len(jobs)} job(s) to {args.output}", file=sys.stderr)
+    elif output:
+        print(output)
 
     return 0
 
