@@ -46,6 +46,17 @@ class Config:
     remote_host: str = ""
     remote_log_dir: str = ""
     jumpbox_uri: str = ""
+    # Database configuration for per-job bastion lookup
+    source_db_host: str = ""
+    source_db_port: int = 5432
+    source_db_name: str = ""
+    source_db_user: str = ""
+    source_db_password: str = ""
+    source_db_table: str = ""
+    source_db_bastion_table: str = ""
+    # SSH configuration
+    ssh_jumpbox_alias: str = ""
+    bastion_ssh_user: str = ""
 
     @classmethod
     def from_env(cls, base_dir: Path | None = None) -> "Config":
@@ -85,6 +96,19 @@ class Config:
         # Jumpbox URI for uploading analysis files
         jumpbox_uri = os.environ.get("JUMPBOX_URI", "")
 
+        # Database configuration for per-job bastion lookup
+        source_db_host = os.environ.get("SOURCE_DB_HOST", "")
+        source_db_port = int(os.environ.get("SOURCE_DB_PORT", "5432"))
+        source_db_name = os.environ.get("SOURCE_DB_NAME", "")
+        source_db_user = os.environ.get("SOURCE_DB_USER", "")
+        source_db_password = os.environ.get("SOURCE_DB_PASSWORD", "")
+        source_db_table = os.environ.get("SOURCE_DB_TABLE", "aap2_events")
+        source_db_bastion_table = os.environ.get("SOURCE_DB_BASTION_TABLE", "aap2_user_url")
+
+        # SSH configuration
+        ssh_jumpbox_alias = os.environ.get("SSH_JUMPBOX_ALIAS", "rca-jumpbox")
+        bastion_ssh_user = os.environ.get("BASTION_SSH_USER", "")
+
         return cls(
             splunk=splunk,
             analysis_dir=analysis_dir,
@@ -93,6 +117,15 @@ class Config:
             remote_host=remote_host,
             remote_log_dir=remote_log_dir,
             jumpbox_uri=jumpbox_uri,
+            source_db_host=source_db_host,
+            source_db_port=source_db_port,
+            source_db_name=source_db_name,
+            source_db_user=source_db_user,
+            source_db_password=source_db_password,
+            source_db_table=source_db_table,
+            source_db_bastion_table=source_db_bastion_table,
+            ssh_jumpbox_alias=ssh_jumpbox_alias,
+            bastion_ssh_user=bastion_ssh_user,
         )
 
     def find_job_log(self, job_id: str) -> Path | None:
@@ -135,3 +168,12 @@ class Config:
         if not self.github_token or self.github_token == "your-github-token":
             errors.append("GITHUB_TOKEN is required")
         return errors
+
+    def has_source_db(self) -> bool:
+        """Check if source database is configured."""
+        return bool(
+            self.source_db_host
+            and self.source_db_name
+            and self.source_db_user
+            and self.source_db_password
+        )

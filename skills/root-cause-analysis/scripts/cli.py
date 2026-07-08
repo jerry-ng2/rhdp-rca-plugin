@@ -12,6 +12,11 @@ from pathlib import Path
 if __name__ == "__main__" and __package__ is None:
     # Running directly as scripts/cli.py - add parent to path
     sys.path.insert(0, str(Path(__file__).parent.parent))
+    from scripts.bastion_resolver import (
+        prepare_bastion_for_fetch,
+        resolve_bastion_for_job,
+        resolve_remote_log_dir,
+    )
     from scripts.config import Config
     from scripts.correlator import build_correlation_timeline, fetch_correlated_logs
     from scripts.github_fetcher import GitHubAnalyzer, GitHubClient
@@ -22,6 +27,11 @@ if __name__ == "__main__" and __package__ is None:
     from scripts.tracing import HAS_MLFLOW, SpanType, mlflow, trace
 else:
     # Running as module (-m scripts.cli)
+    from .bastion_resolver import (
+        prepare_bastion_for_fetch,
+        resolve_bastion_for_job,
+        resolve_remote_log_dir,
+    )
     from .config import Config
     from .correlator import build_correlation_timeline, fetch_correlated_logs
     from .github_fetcher import GitHubAnalyzer, GitHubClient
@@ -104,28 +114,38 @@ def cmd_analyze(args: argparse.Namespace, config: Config, span=None) -> int:
         if job_log_path:
             print(f"Found job log: {job_log_path}")
         elif args.fetch:
-            # Auto-fetch from remote server
-            if not config.remote_host or not config.remote_log_dir:
-                error_message = "--fetch requires REMOTE_HOST and REMOTE_DIR in settings"
-                print(f"Error: {error_message}")
-                if span:
-                    span.set_outputs({"error": error_message})
-                return 1
+            # Auto-fetch from remote server using bastion resolution
             if not config.job_logs_dir:
                 error_message = "--fetch requires JOB_LOGS_DIR to be configured"
                 print(f"Error: {error_message}")
                 if span:
                     span.set_outputs({"error": error_message})
                 return 1
-            print("[Fetch] Job log not found locally, fetching from remote...")
+
+            print(
+                "[Fetch] Job log not found locally, resolving bastion and fetching from remote..."
+            )
             try:
+                # Resolve which bastion to use for this job
+                bastion_target = resolve_bastion_for_job(config, args.job_id)
+
+                # Ensure SSH config entries exist
+                prepare_bastion_for_fetch(config, bastion_target)
+
+                remote_dir = resolve_remote_log_dir(bastion_target, config)
+                print(
+                    f"[Fetch] Using remote log directory: {remote_dir} "
+                    f"on {bastion_target.remote_host}"
+                )
+
                 fetch_job_log(
-                    args.job_id, config.job_logs_dir, config.remote_host, config.remote_log_dir
+                    args.job_id, config.job_logs_dir, bastion_target.remote_host, remote_dir
                 )
             except (
                 FileNotFoundError,
                 subprocess.CalledProcessError,
                 subprocess.TimeoutExpired,
+                ValueError,
             ) as e:
                 error_message = f"Failed to fetch log: {e}"
                 print(f"Error: {error_message}")

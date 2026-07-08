@@ -17,7 +17,16 @@
     "MLFLOW_TRACKING_URI": "<mlflow-tracking-uri>",
     "MLFLOW_TRACKING_USERNAME": "<username>",
     "MLFLOW_TRACKING_PASSWORD": "<password>",
-    "MLFLOW_TAG_USER": "<your-username>"
+    "MLFLOW_TAG_USER": "<your-username>",
+    "SOURCE_DB_HOST": "<source-db-host>",
+    "SOURCE_DB_PORT": "<source-db-port>",
+    "SOURCE_DB_NAME": "<source-db-name>",
+    "SOURCE_DB_USER": "<source-db-user>",
+    "SOURCE_DB_PASSWORD": "<source-db-password>",
+    "SOURCE_DB_TABLE": "<source-db-table>",
+    "SOURCE_DB_BASTION_TABLE": "<source-db-bastion-table>",
+    "SSH_JUMPBOX_ALIAS": "<ssh-jumpbox-alias>",
+    "BASTION_SSH_USER": "<bastion-ssh-user>"
   },
   "hooks": {
     "SessionStart": [
