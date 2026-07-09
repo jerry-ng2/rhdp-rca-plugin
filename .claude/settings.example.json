@@ -25,6 +25,7 @@
     "SOURCE_DB_PASSWORD": "<source-db-password>",
     "SOURCE_DB_TABLE": "<source-db-table>",
     "SOURCE_DB_BASTION_TABLE": "<source-db-bastion-table>",
+    "SOURCE_DB_RESULT_TABLE": "<db-results-table>",
     "SSH_JUMPBOX_ALIAS": "<ssh-jumpbox-alias>",
     "BASTION_SSH_USER": "<bastion-ssh-user>"
   },
