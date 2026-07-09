@@ -6,7 +6,7 @@ set -euo pipefail
 #############################################
 #
 # This script:
-# 1. Queries source PostgreSQL table for unanalyzed job IDs (ai_proccessed = FALSE)
+# 1. Queries source PostgreSQL table for unanalyzed job IDs (ai_processed = FALSE)
 # 2. Invokes Claude in headless mode to run parallel RCA on those jobs
 #
 # Requires SOURCE_DB_* env vars (HOST, PORT, NAME, USER, PASSWORD, TABLE)
@@ -110,14 +110,6 @@ JOBS_LIST=$(echo "$JOB_IDS" | tr '\n' ' ' | sed 's/ $//')
 echo "[INFO] Found $JOB_COUNT job(s) to analyze: $JOBS_LIST"
 
 #############################################
-# Step 1b: Query historical open issues
-#############################################
-echo "[STEP 1b] Querying historical open issues..."
-OPEN_ISSUES=$(python3 "$SCRIPT_DIR/scripts/query_open_issues.py" --limit 30 2>/dev/null || echo "[]")
-OPEN_COUNT=$(echo "$OPEN_ISSUES" | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo "0")
-echo "[INFO] Found $OPEN_COUNT historical open issue group(s)"
-
-#############################################
 # Step 2: Build Dynamic Claude Prompt
 #############################################
 echo "[STEP 2] Building Claude prompt for parallel RCA..."
@@ -134,15 +126,6 @@ You are running in headless mode to analyze failed jobs in parallel.
 **Job IDs to analyze:** $JOBS_LIST
 **Batch ID:** $BATCH_ID
 **Jobs requested:** $JOB_COUNT
-
-**Historical Issues (from previous batches):**
-The following root cause patterns have been seen in prior batch analyses.
-After analyzing the current batch, compare results against these historical patterns.
-Only correlate a current failure with a historical pattern when their root_cause_category values
-match. Then check for additional overlap (same catalog_item, same cluster, or similar
-root_cause_summary). Include matches in the historical_correlations array in the batch report.
-
-$OPEN_ISSUES
 
 **Instructions:**
 
@@ -165,11 +148,7 @@ $OPEN_ISSUES
      .claude/skills/root-cause-analysis/.analysis/{job_id}/step5_analysis_summary.json
    - Also read step1_job_context.json from the same .analysis/{job_id}/ directory for guid,
      catalog_item, cluster/platform, and job_duration_seconds
-   - Detect cross-job patterns: first group jobs by root_cause_category, then within each
-     group look for shared signals (same failing file, same missing resource, similar summary)
-   - Build the batch report JSON that conforms EXACTLY to the schema at:
-     $SCHEMA_FILE
-   - Read the schema file before writing the report; every required field must be present
+   - Read the schema file at $SCHEMA_FILE before building the report; every required field must be present
    - Use these fixed values:
      * batch_id: "$BATCH_ID"
      * total_jobs_requested: $JOB_COUNT
@@ -178,21 +157,33 @@ $OPEN_ISSUES
      * confidence_breakdown: tally high/medium/low from each job's root_cause.confidence
      * high_priority_recommendations: top 5 across all jobs, ranked 1-5, deduplicated where possible
      * failed_analyses: one entry per failed job (empty array when none failed)
-     * cross_job_patterns: shared patterns across 2+ jobs in this batch that share the same
-       root_cause_category and have additional overlap (empty array when none)
-     * historical_correlations: matches between current batch failures and the historical
-       issues listed above. First filter by matching root_cause_category, then confirm with
-       catalog_item, cluster, or root_cause_summary similarity. Each entry needs
-       current_job_ids, historical_job_ids, pattern, description, and root_cause_category.
-       Empty array when no matches found.
      * analysis_path for each job: ".analysis/{job_id}/step5_analysis_summary.json"
 
-4. **Save report** - Write ONLY valid JSON (no markdown, no comments) to:
+4. **Cross-job & historical correlation** - Detect patterns across current batch AND previous batches:
+   a. **Within-batch:** Compare root_cause_summary values across jobs in this batch for genuine
+      similarity (same failing component, same error message, same underlying issue).
+      For each match, add an entry to cross_job_patterns with source: "current_batch".
+   b. **Historical:** Collect the unique (root_cause_category, catalog_item) pairs from analyzed jobs.
+      Write them as a JSON array to /tmp/rca_pairs_${BATCH_ID}.json:
+        [{"root_cause_category": "cloud_api", "catalog_item": "sandbox-ibm"}, ...]
+      Run via Bash:
+        python3 scripts/query_historical_matches.py --input /tmp/rca_pairs_${BATCH_ID}.json --exclude-batch "$BATCH_ID"
+      If the script returns a non-empty JSON array, compare each historical root_cause_summary
+      against the current batch jobs. For genuine matches, add an entry to cross_job_patterns
+      with source: "historical", historical_result_id (the id from the matching result), and
+      recurrence_count (occurrence_count from the query output).
+      Clean up the temporary file when done.
+   c. Do NOT force correlations just because jobs share a root_cause_category — the
+      root_cause_summary content must show real similarity. An empty cross_job_patterns
+      array is the correct output when no high-confidence patterns exist.
+
+5. **Save report** - Write ONLY valid JSON (no markdown, no comments) to:
    $REPORT_DIR/${BATCH_ID}.json
 
-5. **Output completion summary** - Print to stdout:
+6. **Output completion summary** - Print to stdout:
    - Number of jobs analyzed successfully
    - Number of failures (if any)
+   - Cross-job patterns found (if any)
    - Report location
 
 **Note:** The root-cause-analysis skill handles Steps 1-5 automatically, including Claude's analysis in Step 5.
@@ -226,12 +217,13 @@ mkdir -p "$REPORT_DIR"
 
 # Run claude in non-interactive mode with permissions bypass for testing
 # Note: -p/--print flag for non-interactive output
-# Using --dangerously-skip-permissions for testing only
 # Run from repo root to pick up .claude/settings.json (MLflow hooks, env vars)
 
 cd "$SCRIPT_DIR" || exit 1
 
-claude -p --dangerously-skip-permissions "$CLAUDE_PROMPT" || {
+echo "$CLAUDE_PROMPT" | claude -p \
+  --allowedTools "Agent,Skill,Read,Write,Bash,mcp__github__search_code,mcp__github__get_file_contents" \
+  - || {
   echo "[ERROR] Claude execution failed"
   exit 1
 }

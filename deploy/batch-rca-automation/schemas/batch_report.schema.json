@@ -17,8 +17,7 @@
     "high_priority_recommendations",
     "job_summaries",
     "failed_analyses",
-    "cross_job_patterns",
-    "historical_correlations"
+    "cross_job_patterns"
   ],
   "properties": {
     "batch_id": {
@@ -226,9 +225,7 @@
               "root_cause_category",
               "confidence",
               "root_cause_summary",
-              "guid",
               "catalog_item",
-              "cluster",
               "job_duration_seconds",
               "analysis_duration_ms",
               "analysis_path"
@@ -259,12 +256,7 @@
                 "minLength": 1,
                 "description": "Root cause narrative from step5 root_cause.summary"
               },
-              "guid": {
-                "type": "string",
-                "minLength": 1
-              },
               "catalog_item": {"type": "string"},
-              "cluster": {"type": "string"},
               "platform": {"type": "string"},
               "job_duration_seconds": {
                 "type": "integer",
@@ -337,77 +329,45 @@
     },
     "cross_job_patterns": {
       "type": "array",
-      "description": "Shared failure patterns across multiple jobs in this batch; empty array if none",
+      "description": "Shared failure patterns across jobs in this batch and/or historical batches; empty array if none",
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["pattern", "jobs", "description"],
+        "required": ["pattern", "jobs", "description", "source"],
         "properties": {
           "pattern": {
             "type": "string",
             "minLength": 1
           },
+          "source": {
+            "type": "string",
+            "enum": ["current_batch", "historical"],
+            "description": "Whether this pattern was found within the current batch or against historical results"
+          },
           "jobs": {
             "type": "array",
-            "minItems": 2,
+            "minItems": 1,
             "items": {
               "type": "string"
-            }
+            },
+            "description": "Job IDs from the current batch involved in this pattern"
+          },
+          "historical_result_id": {
+            "type": "integer",
+            "description": "ID from aap2_job_results that this pattern matches (only when source is historical)"
           },
           "description": {
             "type": "string",
             "minLength": 1
+          },
+          "recurrence_count": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Total historical occurrences of this pattern (only when source is historical)"
           },
           "shared_github_path": {
             "type": "string",
             "description": "Common code path in owner/repo:path/to/file.yml:line format when applicable"
-          }
-        }
-      }
-    },
-    "historical_correlations": {
-      "type": "array",
-      "description": "Correlations between current batch failures and historically open issues from previous batches; empty array if none",
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["current_job_ids", "historical_job_ids", "pattern", "description"],
-        "properties": {
-          "current_job_ids": {
-            "type": "array",
-            "minItems": 1,
-            "items": { "type": "string" },
-            "description": "Job IDs from the current batch that match this historical pattern"
-          },
-          "historical_job_ids": {
-            "type": "array",
-            "minItems": 1,
-            "items": { "type": "string" },
-            "description": "Job IDs from previous batches that share this root cause"
-          },
-          "pattern": {
-            "type": "string",
-            "minLength": 1,
-            "description": "The recurring failure pattern name"
-          },
-          "description": {
-            "type": "string",
-            "minLength": 1,
-            "description": "How the current failures correlate with the historical issue"
-          },
-          "root_cause_category": {
-            "type": "string",
-            "enum": [
-              "application_bug",
-              "infrastructure",
-              "configuration",
-              "dependency",
-              "network",
-              "resource",
-              "cloud_api",
-              "secrets",
-              "unknown"
-            ]
           }
         }
       }
