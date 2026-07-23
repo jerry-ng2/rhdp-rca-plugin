@@ -272,7 +272,7 @@ cd "$SCRIPT_DIR" || exit 1
 
 CLAUDE_STDERR_FILE=$(mktemp)
 claude -p \
-  --allowedTools "Agent,Bash,Read,Write,mcp__github__search_code,mcp__github__get_file_contents" \
+  --allowedTools "Agent,Bash,Read,Write,Skill,mcp__github__search_code,mcp__github__get_file_contents" \
   --model claude-sonnet-4-6 \
   "$CLAUDE_PROMPT" 2>"$CLAUDE_STDERR_FILE" || {
   echo "[ERROR] Claude execution failed"
