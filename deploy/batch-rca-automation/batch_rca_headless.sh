@@ -194,7 +194,7 @@ You are running in headless mode to analyze failed jobs in parallel.
 **Batch ID:** $BATCH_ID
 **Jobs requested:** $JOB_COUNT
 
-**Known Recent Issues (from last 4 hours):**
+**Known Recent Issues (last 4 hours — for aggregation historical matching only):**
 $KNOWN_ISSUES
 
 **Instructions:**
@@ -203,7 +203,7 @@ $KNOWN_ISSUES
 
    Agent({
      description: "RCA for job {JOB_ID}",
-     prompt: "Invoke the 'root-cause-analysis' skill for job {JOB_ID}. Use: Skill({skill: 'root-cause-analysis', args: '{JOB_ID}'}). Follow all skill instructions including Step 5 analysis. After Step 1 completes (job context parsing), compare failed_tasks[].error_message against the Known Recent Issues list provided in the parent prompt. If ANY error_message semantically matches a known issue's root_cause_summary (same error type, same failure mode), you may skip the remaining skill steps and report completion with the matched result_id. After completing all steps, output ONLY this JSON as your final response (no other text): {\"job_id\": \"<JOB_ID>\", \"status\": \"analyzed\", \"root_cause_category\": \"<from step5>\", \"confidence\": \"<from step5>\", \"root_cause_summary\": \"<from step5>\", \"catalog_item\": \"<from step1>\", \"platform\": \"<from step1>\", \"job_duration_seconds\": <integer from step1>, \"analysis_path\": \".analysis/<JOB_ID>/step5_analysis_summary.json\", \"recommendations\": [<top 2 high-priority recommendations from step5, each with action and details fields>]}. For early-exit match set status to matched_known_issue and add matched_result_id.",
+     prompt: "Invoke the 'root-cause-analysis' skill for job {JOB_ID}. Use: Skill({skill: 'root-cause-analysis', args: '{JOB_ID}'}). Follow all skill instructions including Step 5 analysis and upload. Report completion status.",
      run_in_background: true
    })
 
@@ -214,14 +214,13 @@ $KNOWN_ISSUES
    Record per-job duration_ms and status (completed|failed|timeout) in timing.agent_completion.
 
 3. **Aggregate results** - After all agents complete:
-   - Each agent emitted a compact JSON summary as its final response — extract
-     per-job data directly from the task notification text. Do NOT read any files.
+   - For each job ID, read its step5 summary from:
+     ~/.claude/plugins/marketplaces/*/skills/root-cause-analysis/.analysis/{job_id}/step5_analysis_summary.json
+     and step1 context from the same directory's step1_job_context.json.
+     Use a glob to find the correct marketplace path.
    - Tally: total_jobs_analyzed, total_jobs_failed, confidence_breakdown,
      root_cause_category_breakdown, top-5 high_priority_recommendations
-     (deduplicated from each job's recommendations field)
-   - For any agent that reported an early-exit match against a known issue, use
-     status "matched_known_issue"; copy root_cause_category, confidence, and
-     root_cause_summary from the matched known issue
+     (deduplicated by action text, highest priority first)
    - **Historical matches (semantic)** — For each job with high or medium confidence,
      compare its root_cause_summary against every entry in the Known Recent Issues list.
      A match requires the failure to be genuinely the same: same error type, same
