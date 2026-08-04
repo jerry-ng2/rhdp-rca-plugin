@@ -10,7 +10,7 @@ image:
 cronjob:
   schedule: "7,37 * * * *"
   limit: 15
-  period: 30m
+  since: "30 minutes"
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
 
@@ -26,9 +26,14 @@ resources:
     cpu: "2"
     memory: 2Gi
 
+claude:
+  backend: "vertex"        # "vertex" (default) or "litellm"
+  model: "claude-sonnet-4-6"
+
 secrets:
   names:
     vertexCreds: claude-vertex-creds
+    litellmCreds: claude-litellm-creds
     skillConfig: rca-skill-config
     sshKey: ci-ssh-key
     webhookSecret: rhdp-rca-plugin-webhook-secret
@@ -36,6 +41,9 @@ secrets:
     cloudMlRegion: ""
     projectId: ""
     gcpCredentials: ""
+  litellm:
+    baseUrl: ""            # e.g. https://<your-litemaas-endpoint>
+    apiKey: ""             # LiteMaaS-issued key (not an Anthropic key)
   skillConfig:
     settingsJson: ""
   ssh:
