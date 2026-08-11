@@ -42,6 +42,31 @@ def find_match(cur: Any, results_table: str, job: dict[str, Any]) -> int | None:
     return None
 
 
+def append_job_id(cur: Any, results_table: str, result_id: int, job_id: str) -> None:
+    """Append job_id to the result row's comma-separated job_id column, if not already present."""
+    cur.execute(
+        psycopg2.sql.SQL("SELECT job_id FROM {} WHERE id = %s").format(
+            psycopg2.sql.Identifier(results_table)
+        ),
+        (result_id,),
+    )
+    row = cur.fetchone()
+    if row is None:
+        return
+
+    ids = [x for x in (row[0] or "").split(",") if x]
+    if job_id in ids:
+        return
+    ids.append(job_id)
+
+    cur.execute(
+        psycopg2.sql.SQL("UPDATE {} SET job_id = %s WHERE id = %s").format(
+            psycopg2.sql.Identifier(results_table)
+        ),
+        (",".join(ids), result_id),
+    )
+
+
 def _validate_match_id(cur: Any, results_table: str, matched_id: int, job: dict[str, Any]) -> bool:
     cur.execute(
         psycopg2.sql.SQL(
@@ -99,6 +124,7 @@ def store_report(
                     ).format(psycopg2.sql.Identifier(source_table)),
                     (matched_id, jid),
                 )
+                append_job_id(cur, results_table, matched_id, jid)
             else:
                 cur.execute(
                     psycopg2.sql.SQL(
@@ -141,6 +167,7 @@ def store_report(
 def store_pre_matched(conn: Any, config: dict[str, Any], pre_matched: list[dict[str, Any]]) -> int:
     """Store pre-filtered jobs that were matched before Claude invocation."""
     source_table = config["source_table"]
+    results_table = config["results_table"]
     count = 0
     with conn.cursor() as cur:
         for job in pre_matched:
@@ -153,6 +180,7 @@ def store_pre_matched(conn: Any, config: dict[str, Any], pre_matched: list[dict[
                 ).format(psycopg2.sql.Identifier(source_table)),
                 (matched_id, jid),
             )
+            append_job_id(cur, results_table, matched_id, jid)
             print(
                 f"[PRE-MATCH] job {jid} -> result {matched_id}"
                 f" (reason: {job.get('match_reason', 'catalog_item')})"
@@ -167,6 +195,7 @@ def link_intra_batch_dupes(
 ) -> int:
     """Copy aap2_job_results_fk_id from representative to each duplicate in the same batch."""
     source_table = config["source_table"]
+    results_table = config["results_table"]
     count = 0
     with conn.cursor() as cur:
         for entry in intra_batch_dupes:
@@ -195,6 +224,7 @@ def link_intra_batch_dupes(
                 ).format(psycopg2.sql.Identifier(source_table)),
                 (fk_id, dupe_id),
             )
+            append_job_id(cur, results_table, fk_id, dupe_id)
             print(f"[DUPE-LINK] job {dupe_id} -> result {fk_id} (via representative {rep_id})")
             count += 1
 

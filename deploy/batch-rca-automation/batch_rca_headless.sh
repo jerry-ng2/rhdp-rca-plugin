@@ -250,6 +250,9 @@ $KNOWN_ISSUES
 
 2. **Wait for completion** - You'll receive task-notification for each agent when done.
    Record per-job duration_ms and status (completed|failed|timeout) in timing.agent_completion.
+   **CRITICAL:** If any agent fails or returns an error, continue processing the remaining
+   agents. Mark failed agents with status "failed" in the report. You MUST always proceed
+   to steps 3-5 and write the report file, even if every single agent fails.
 
 3. **Aggregate results** - After all agents complete:
    - For each job ID, read its step5 summary from:
