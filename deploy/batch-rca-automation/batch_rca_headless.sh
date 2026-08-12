@@ -308,12 +308,21 @@ mkdir -p "$REPORT_DIR"
 cd "$SCRIPT_DIR" || exit 1
 
 CLAUDE_STDERR_FILE=$(mktemp)
+MODEL_ROUTING_THRESHOLD="${MODEL_ROUTING_THRESHOLD:-5}"
 CLAUDE_MODEL="${CLAUDE_MODEL:-claude-sonnet-4-6}"
-echo "[INFO] Using model: $CLAUDE_MODEL"
+QWEN_MODEL="${QWEN_MODEL:-qwen/qwen3-235b-a22b}"
+
+if [ "$JOB_COUNT" -lt "$MODEL_ROUTING_THRESHOLD" ]; then
+  SELECTED_MODEL="$QWEN_MODEL"
+  echo "[INFO] Batch size ($JOB_COUNT) < $MODEL_ROUTING_THRESHOLD — using Qwen: $SELECTED_MODEL"
+else
+  SELECTED_MODEL="$CLAUDE_MODEL"
+  echo "[INFO] Batch size ($JOB_COUNT) >= $MODEL_ROUTING_THRESHOLD — using Claude: $SELECTED_MODEL"
+fi
 
 claude -p \
   --allowedTools "Agent,Bash,Read,Write,Skill,mcp__github__search_code,mcp__github__get_file_contents" \
-  --model "$CLAUDE_MODEL" \
+  --model "$SELECTED_MODEL" \
   "$CLAUDE_PROMPT" 2>"$CLAUDE_STDERR_FILE" || {
   echo "[ERROR] Claude execution failed"
   echo "[DEBUG] stderr: $(cat "$CLAUDE_STDERR_FILE")"
